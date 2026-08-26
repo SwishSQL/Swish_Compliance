@@ -11,6 +11,10 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // The tests under tests/ are run straight through Node's built-in
+    // runner, which resolves the real ".ts" path rather than a bundled
+    // one, so those imports have to keep their extension.
+    "allowImportingTsExtensions": true,
     "jsx": "preserve",
     "incremental": true,
     "plugins": [{ "name": "next" }],

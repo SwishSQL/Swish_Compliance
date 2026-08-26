@@ -1,23 +1,24 @@
 {
-  "name": "swish-compliance",
+  "name": "swish-compliance-sql",
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=22.6.0"
   },
   "scripts": {
     "dev": "next dev -p 3001",
     "build": "next build",
     "start": "next start -p 3001",
     "lint": "next lint",
-    "db:migrate": "node scripts/migrate.mjs",
-    "db:seed": "node scripts/seed.mjs"
+    "test": "node --test \"tests/*.test.ts\" \"tests/*.test.mjs\"",
+    "db:check": "node scripts/db-check.mjs",
+    "db:migrate": "node scripts/migrate.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "jose": "^5.10.0",
+    "mssql": "^11.0.1",
     "next": "^15.2.4",
-    "pg": "^8.13.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "xlsx": "^0.18.5",
@@ -26,8 +27,8 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.0.0",
     "@types/bcryptjs": "^2.4.6",
+    "@types/mssql": "^9.1.5",
     "@types/node": "^22.10.5",
-    "@types/pg": "^8.11.10",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "eslint": "^9.17.0",

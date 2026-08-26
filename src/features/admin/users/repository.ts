@@ -1,6 +1,6 @@
 import "server-only";
 import bcrypt from "bcryptjs";
-import { queryAll, queryOne, execute, pool } from "@/lib/db";
+import { queryAll, queryOne, execute, withTransaction } from "@/lib/db";
 
 export type UserRow = {
   id: number;
@@ -158,64 +158,47 @@ export async function updateUser(input: UpdateUserInput): Promise<void> {
   }
 }
 
-async function replaceUserBrands(userId: number, brandIds: number[]): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query(`DELETE FROM user_brands WHERE user_id = $1`, [userId]);
-    for (const bid of brandIds) {
+/**
+ * Replace a user's rows in one of the user_* junction tables. All three
+ * have the same shape — (user_id, <target>_id) — so they share one body.
+ *
+ * `table` and `column` are interpolated, but they are compile-time literal
+ * unions rather than anything caller-supplied, so this stays injection-safe.
+ */
+async function replaceUserLinks(
+  table: "user_brands" | "user_departments" | "user_domains",
+  column: "brand_id" | "department_id" | "domain_id",
+  userId: number,
+  ids: number[]
+): Promise<void> {
+  await withTransaction(async (client) => {
+    await client.query(`DELETE FROM ${table} WHERE user_id = $1`, [userId]);
+    for (const id of ids) {
+      // On Postgres this was ON CONFLICT DO NOTHING. SQL Server has no
+      // such clause, and the DELETE above already cleared this user's
+      // rows, so the guard only has to cope with a repeated id in `ids`.
       await client.query(
-        `INSERT INTO user_brands (user_id, brand_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [userId, bid]
+        `INSERT INTO ${table} (user_id, ${column})
+         SELECT $1, $2
+         WHERE NOT EXISTS (
+           SELECT 1 FROM ${table} WHERE user_id = $1 AND ${column} = $2
+         )`,
+        [userId, id]
       );
     }
-    await client.query("COMMIT");
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
-  }
+  });
+}
+
+async function replaceUserBrands(userId: number, brandIds: number[]): Promise<void> {
+  await replaceUserLinks("user_brands", "brand_id", userId, brandIds);
 }
 
 async function replaceUserDepartments(userId: number, deptIds: number[]): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query(`DELETE FROM user_departments WHERE user_id = $1`, [userId]);
-    for (const did of deptIds) {
-      await client.query(
-        `INSERT INTO user_departments (user_id, department_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [userId, did]
-      );
-    }
-    await client.query("COMMIT");
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
-  }
+  await replaceUserLinks("user_departments", "department_id", userId, deptIds);
 }
 
 async function replaceUserDomains(userId: number, domainIds: number[]): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query(`DELETE FROM user_domains WHERE user_id = $1`, [userId]);
-    for (const dmid of domainIds) {
-      await client.query(
-        `INSERT INTO user_domains (user_id, domain_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [userId, dmid]
-      );
-    }
-    await client.query("COMMIT");
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
-  }
+  await replaceUserLinks("user_domains", "domain_id", userId, domainIds);
 }
 
 export async function resetUserPassword(id: number, newPassword: string): Promise<void> {

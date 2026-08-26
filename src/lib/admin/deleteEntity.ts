@@ -356,7 +356,7 @@ export async function deleteEntityWithBackup(
     // RESTRICT from audits.template_id) — surface that as a normal error
     // rather than letting a raw Postgres constraint violation bubble up.
     if (type === "checklist_template") {
-      const inUse = await client.query(
+      const inUse = await client.query<{ n: number }>(
         `SELECT COUNT(*)::int AS n FROM audits WHERE template_id = $1`,
         [id]
       );

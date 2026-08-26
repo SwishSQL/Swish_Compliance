@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/auth/guard";
-import { execute } from "@/lib/db";
+import { execute, queryOne } from "@/lib/db";
 
 const NameSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(120),
@@ -55,10 +55,11 @@ function makeActions(table: Table, revalidatePathStr: string) {
       if (result === 0) {
         throw new Error(`"${parsed.name}" already exists.`);
       }
-      const { rows } = await import("@/lib/db").then((m) =>
-        m.pool.query<{ id: number }>(`SELECT id FROM ${table} WHERE name = $1`, [parsed.name])
+      const created = await queryOne<{ id: number }>(
+        `SELECT id FROM ${table} WHERE name = $1`,
+        [parsed.name]
       );
-      await audit(admin.id, admin.email, "create", table, rows[0].id, { name: parsed.name });
+      await audit(admin.id, admin.email, "create", table, created!.id, { name: parsed.name });
       revalidatePath(revalidatePathStr);
     },
 

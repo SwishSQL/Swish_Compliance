@@ -1,8 +1,13 @@
-# Swish Compliance
+# Swish Compliance (SQL Server edition)
 
-Full-stack compliance management app — SOP register, audits, CAPA tracking, and dashboards. Built with **Next.js 16 + PostgreSQL**.
+Full-stack compliance management app — SOP register, audits, CAPA tracking, and dashboards. Built with **Next.js 16 + Microsoft SQL Server**.
 
-This is a clean rewrite of the swish-ecs concept, running entirely on PostgreSQL (no Snowflake / SharePoint / Azure required) for fast iteration.
+> This repository is the SQL Server port of
+> [swish-compliance](https://github.com/swish-code/swish-compliance), which
+> runs on PostgreSQL. The port is **in progress** — see
+> [PORTING.md](./PORTING.md) for what is done, what is not, and what to
+> watch out for. Until that document says otherwise, treat this repo as
+> not yet ready to run against a live database.
 
 ## What it does
 
@@ -23,15 +28,15 @@ A central place to manage Standard Operating Procedures (SOPs) and the complianc
 | Language  | TypeScript |
 | Styling   | Tailwind CSS v4 |
 | Auth      | Custom: bcryptjs + JWT (HS256) in an HTTP-only cookie via `jose` |
-| Database  | PostgreSQL (via `pg`) |
+| Database  | Microsoft SQL Server (via `mssql`) |
 | Validation| Zod |
-| Runtime   | Node.js ≥ 20.9 |
+| Runtime   | Node.js ≥ 22.6 |
 
 ## Quick start
 
 ### Prerequisites
-- Node.js 20+
-- PostgreSQL (local Docker, Railway, Neon, Supabase, etc.)
+- Node.js 22.6+ (the test suite relies on built-in TypeScript stripping)
+- Microsoft SQL Server 2019+ / Azure SQL (local Docker image works fine)
 
 ### 1. Install
 ```bash
@@ -49,35 +54,54 @@ Generate a JWT secret:
 node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 ```
 
-### 3. Migrate + seed
+### 3. Check the connection
+```bash
+npm run db:check
+```
+
+Connects, then exercises the data layer end to end — parameter binding for
+every type, array expansion, result shapes and transactions. Run this first;
+if it fails, nothing else will work.
+
+### 4. Migrate + seed
 ```bash
 npm run db:migrate
 ```
 
-This creates all tables (idempotent) and seeds:
-- Reference brands and departments
-- A bootstrap admin user (`admin@swish.local` / `admin123` by default, or `ADMIN_EMAIL`/`ADMIN_PASSWORD` from env)
+Applies every `sql/*.sql` file that has not run yet, tracking them in a
+`schema_migrations` table, then seeds a bootstrap admin user
+(`admin@swish.local` / `admin123` by default, or `ADMIN_EMAIL` /
+`ADMIN_PASSWORD` from env).
 
-### 4. Run
+> The SQL files are still being converted to T-SQL — see [PORTING.md](./PORTING.md).
+
+### 5. Run
 ```bash
 npm run dev   # http://localhost:3001
 ```
 
 Sign in with the admin credentials above. Go to **Compliance → SOPs → + New SOP**.
 
-## Deploy on Railway
+## Tests
 
-`railway.json` is pre-configured for one-click deploy.
+```bash
+npm test
+```
 
-1. Create a new Railway project from this GitHub repo
-2. Add a **PostgreSQL** plugin to the project
-3. On the web service, set env vars:
-   - `DATABASE_URL` → reference: `${{Postgres.DATABASE_URL}}`
-   - `JWT_SECRET` → long random string (use the generator above)
-   - `NODE_ENV` → `production`
-   - `ADMIN_EMAIL` → your admin email
-   - `ADMIN_PASSWORD` → a strong password
-4. Deploy. Railway runs `npm run build` → then on each boot: `npm run db:migrate && npm start`. Migrations are idempotent so it's safe to redeploy any time.
+Covers the pg-to-T-SQL query translator and the migration batch splitter —
+the two pieces of pure logic the whole data layer rests on.
+
+## Deploy
+
+`railway.json` is configured to run `npm run db:migrate && npm start` on
+boot. Set these env vars on the service:
+
+- `DATABASE_URL` → your SQL Server connection string (see `.env.example`)
+- `JWT_SECRET` → long random string (use the generator above)
+- `NODE_ENV` → `production`
+- `ADMIN_EMAIL` / `ADMIN_PASSWORD` → bootstrap admin credentials
+
+Migrations are tracked and never re-applied, so redeploying is safe.
 
 ## Project layout
 
@@ -92,7 +116,8 @@ swish-compliance/
 │   ├── middleware.ts         # Cookie auth guard for /api/* and protected pages
 │   ├── lib/
 │   │   ├── env.ts            # Zod-validated env vars
-│   │   ├── db.ts             # PostgreSQL pool + query helpers
+│   │   ├── db.ts             # SQL Server pool + query helpers
+│   │   ├── sqlTranslate.ts   # pg $1 placeholders -> T-SQL @p1 parameters
 │   │   └── auth/
 │   │       ├── session.ts    # JWT sign/verify, cookie management, password check
 │   │       └── guard.ts      # requireUser() + role helpers

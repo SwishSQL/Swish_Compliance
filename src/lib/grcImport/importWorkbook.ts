@@ -1,6 +1,5 @@
 import "server-only";
 import * as XLSX from "xlsx";
-import type { PoolClient } from "pg";
 import { withTransaction } from "@/lib/db";
 
 /**
@@ -534,7 +533,3 @@ export async function importGrcWorkbook(
     };
   }
 }
-
-// Re-exported for callers that only need the raw parsed rows (e.g. a
-// lighter "what's in this file" preview without touching the database).
-export type { PoolClient };

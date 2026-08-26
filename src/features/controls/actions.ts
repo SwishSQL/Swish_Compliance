@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requireUser, canEditSops, canDeleteOrArchive } from "@/lib/auth/guard";
-import { execute } from "@/lib/db";
+import { execute, queryAll } from "@/lib/db";
 import {
   createControl,
   linkControl,
@@ -125,8 +125,8 @@ export async function unlinkControlAction(formData: FormData) {
 
 export async function recomputeAllControlsAction() {
   await requireUser();
-  const { rows } = await import("@/lib/db").then((m) =>
-    m.pool.query<{ id: number }>(`SELECT id FROM controls WHERE is_active`)
+  const rows = await queryAll<{ id: number }>(
+    `SELECT id FROM controls WHERE is_active`
   );
   for (const r of rows) {
     await recomputeControlHealth(r.id);
