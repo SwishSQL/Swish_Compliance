@@ -205,8 +205,14 @@ export default async function SopDetailPage({
         </div>
       )}
 
-      {/* Workflow actions */}
-      {transitions.length > 0 && !locked && (
+      {/* Workflow actions. `transitions` already comes from
+          availableTransitions(role, status), which is the authoritative
+          check — it correctly returns the Approved→Archived transition
+          for admin/compliance even though the SOP is otherwise locked.
+          The old `&& !locked` here duplicated that check incorrectly and
+          hid Archive along with everything else, so an approved SOP had
+          no visible actions for anyone, admin included. */}
+      {transitions.length > 0 && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 mb-4">
           <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">
             Available actions
