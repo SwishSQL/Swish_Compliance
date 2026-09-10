@@ -475,6 +475,26 @@ export async function getAuditScope(
 }
 
 /**
+ * Same as getAuditScope but for many audits at once — used by the
+ * cross-audit bulk-assign action, which needs to re-verify (server-side)
+ * the real department of every selected finding's audit, not just one.
+ */
+export async function getAuditScopesMap(
+  auditIds: number[]
+): Promise<Map<number, { brand_id: number | null; department_id: number | null }>> {
+  if (auditIds.length === 0) return new Map();
+  const rows = await queryAll<{
+    id: number;
+    brand_id: number | null;
+    department_id: number | null;
+  }>(
+    `SELECT id, brand_id, department_id FROM audits WHERE id = ANY($1::int[])`,
+    [[...new Set(auditIds)]]
+  );
+  return new Map(rows.map((r) => [r.id, { brand_id: r.brand_id, department_id: r.department_id }]));
+}
+
+/**
  * Create OR update the CAPA linked to a specific (audit, item) pair.
  * The upsert key is (source_audit_id, source_item_id) — a finding can
  * only ever have ONE CAPA row.
