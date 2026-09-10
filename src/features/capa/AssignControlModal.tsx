@@ -92,7 +92,11 @@ export default function AssignControlModal({
 
     startTransition(async () => {
       try {
-        await assignControlCapasAction(fd);
+        const result = await assignControlCapasAction(fd);
+        if (!result.ok) {
+          setError(result.error);
+          return;
+        }
         setOpen(false);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Assignment failed.");

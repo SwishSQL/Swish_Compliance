@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requireUser, canApproveSops, canDeleteOrArchive } from "@/lib/auth/guard";
+import { getUserScope } from "@/lib/auth/access";
 import { execute } from "@/lib/db";
 import {
   createCapa,
@@ -397,11 +398,19 @@ const AssignFromFindingSchema = z.object({
  * otherwise updates the existing one with the new assignment metadata.
  * Fires "capa:assigned" notifications to the assignee and reviewer.
  *
- * Gated to compliance / BE / admin (assign is a reviewer prerogative).
- * The audit creator is also allowed because they can drive follow-ups
- * on their own audits.
+ * Gated to compliance / BE / admin (assign is a reviewer prerogative), plus
+ * department managers assigning within their own department (user spec
+ * 2026-09-10) — verified against the audit's actual department server-side
+ * via getAuditScope, never trusting the client-supplied department_id.
+ *
+ * Returns {ok,error} instead of throwing: a thrown Server Action error gets
+ * redacted by Next.js in production into a generic digest-only message, so
+ * every failure path here must return instead (see saveResponsesBulkAction
+ * for the same established pattern).
  */
-export async function assignCapaFromFindingAction(formData: FormData) {
+export async function assignCapaFromFindingAction(
+  formData: FormData
+): Promise<{ ok: true; id: number } | { ok: false; error: string }> {
   const user = await requireUser();
   const raw = Object.fromEntries(formData.entries());
   const parsed = AssignFromFindingSchema.parse({
@@ -415,14 +424,25 @@ export async function assignCapaFromFindingAction(formData: FormData) {
       raw.assignment_note === "" ? null : raw.assignment_note,
   });
 
-  const isAllowed =
+  const isReviewerRole =
     user.role === "admin" ||
     user.role === "compliance" ||
     user.role === "business_excellence";
+
+  let isAllowed = isReviewerRole;
+  if (!isAllowed && user.role === "department_manager") {
+    const auditScope = await getAuditScope(parsed.audit_id);
+    const scope = await getUserScope(user.id, user.role);
+    isAllowed =
+      !!auditScope?.department_id &&
+      scope.departmentIds.includes(auditScope.department_id);
+  }
   if (!isAllowed) {
-    throw new Error(
-      "Only Compliance, Business Excellence, or admin can assign CAPAs."
-    );
+    return {
+      ok: false,
+      error:
+        "Only Compliance, Business Excellence, admin, or the department's own manager can assign CAPAs.",
+    };
   }
 
   const { id, code, created } = await upsertCapaFromFinding({
@@ -495,6 +515,7 @@ export async function assignCapaFromFindingAction(formData: FormData) {
 
   revalidatePath("/capa");
   revalidatePath(`/capa/${id}`);
+  return { ok: true, id };
 }
 
 const AssignControlSchema = z.object({
@@ -521,7 +542,11 @@ const AssignControlSchema = z.object({
  * per-finding flow. Notifications are collapsed into ONE summary per
  * recipient instead of one per CAPA.
  */
-export async function assignControlCapasAction(formData: FormData) {
+export async function assignControlCapasAction(
+  formData: FormData
+): Promise<
+  { ok: true; assigned: number } | { ok: false; error: string }
+> {
   const user = await requireUser();
   const raw = Object.fromEntries(formData.entries());
   const parsed = AssignControlSchema.parse({
@@ -533,14 +558,26 @@ export async function assignControlCapasAction(formData: FormData) {
     assignment_note: raw.assignment_note === "" ? null : raw.assignment_note,
   });
 
-  const isAllowed =
+  const auditScope = await getAuditScope(parsed.audit_id);
+
+  const isReviewerRole =
     user.role === "admin" ||
     user.role === "compliance" ||
     user.role === "business_excellence";
+
+  let isAllowed = isReviewerRole;
+  if (!isAllowed && user.role === "department_manager") {
+    const userScope = await getUserScope(user.id, user.role);
+    isAllowed =
+      !!auditScope?.department_id &&
+      userScope.departmentIds.includes(auditScope.department_id);
+  }
   if (!isAllowed) {
-    throw new Error(
-      "Only Compliance, Business Excellence, or admin can assign CAPAs."
-    );
+    return {
+      ok: false,
+      error:
+        "Only Compliance, Business Excellence, admin, or the department's own manager can assign CAPAs.",
+    };
   }
 
   const findings = await listBulkAssignableFindings(
@@ -548,12 +585,14 @@ export async function assignControlCapasAction(formData: FormData) {
     parsed.control_id ?? null
   );
   if (findings.length === 0) {
-    throw new Error(
-      "Nothing to assign — every finding under this control already has an assignee."
-    );
+    return {
+      ok: false,
+      error:
+        "Nothing to assign — every finding under this control already has an assignee.",
+    };
   }
 
-  const scope = await getAuditScope(parsed.audit_id);
+  const scope = auditScope;
 
   const capas: { id: number; code: string }[] = [];
   for (const f of findings) {
@@ -629,7 +668,7 @@ export async function assignControlCapasAction(formData: FormData) {
   }
 
   revalidatePath("/capa");
-  return { assigned: capas.length };
+  return { ok: true, assigned: capas.length };
 }
 
 const AssignSchema = z.object({
