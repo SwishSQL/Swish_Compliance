@@ -22,18 +22,18 @@ server, follow **[docs/DEPLOY-IT.md](docs/DEPLOY-IT.md)**.
 ```bash
 npm install
 cp .env.example .env.local      # set DATABASE_URL and JWT_SECRET
-npm run db:check                # connects and exercises the data layer
-npm run db:migrate              # creates the schema + seed data + first admin
 npm run build && npm start      # http://localhost:6011
 ```
 
-`npm run dev` runs the development server instead of the production build.
+On start the app creates the database (if the login may), all tables, the seed data
+and the first admin by itself, and applies any new `sql/*.sql` files — no separate
+migration step. `npm run dev` runs the development server instead of the production build.
 
 ## Scripts
 
 | Command | What it does |
 |---|---|
-| `npm run db:migrate` | Applies every `sql/*.sql` file not yet applied (tracked in `schema_migrations`), then creates the first admin user if the users table is empty. Safe to re-run. |
+| `npm run db:migrate` | The same database setup the server runs on every start (create database if missing, apply new `sql/*.sql`, first admin), run by hand. Safe to re-run. |
 | `npm run db:check` | Smoke test of the database layer against your server. Run it first if anything looks wrong. |
 | `npm test` | Unit tests for the query translator and the migration batch splitter. |
 | `node tools/sqlcheck.mjs <file.sql> '[params]'` | Runs one query against the database inside a transaction that is always rolled back. |
