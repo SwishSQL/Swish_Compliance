@@ -1,5 +1,6 @@
 import "server-only";
-import { queryAll, queryOne, execute } from "@/lib/db";
+import { queryAll, queryOne, execute, withTransaction } from "@/lib/db";
+import type { TxClient } from "@/lib/db";
 import type { Sop, SopStatus } from "./types";
 
 const SOP_SELECT = `
@@ -14,7 +15,22 @@ const SOP_SELECT = `
   s.brand_is_function, s.is_all_departments,
   s.purpose, s.scope, s.process_flow, s.roles_responsibilities,
   s.inputs_outputs, s.tools_forms, s.kpis,
-  s.ownership_review, s.appendices, s.signatures_approval
+  s.ownership_review, s.appendices, s.signatures_approval,
+  -- Every department this SOP applies to (migration 052). department_id
+  -- above is still the first of these, kept for the joins and scope walks
+  -- that predate the junction.
+  COALESCE(
+    (SELECT array_agg(sd.department_id ORDER BY dep.name)
+       FROM sop_departments sd JOIN departments dep ON dep.id = sd.department_id
+       WHERE sd.sop_id = s.id),
+    ARRAY[]::int[]
+  ) AS department_ids,
+  COALESCE(
+    (SELECT array_agg(dep.name ORDER BY dep.name)
+       FROM sop_departments sd JOIN departments dep ON dep.id = sd.department_id
+       WHERE sd.sop_id = s.id),
+    ARRAY[]::text[]
+  ) AS department_names
 FROM sops s
 LEFT JOIN brands       b   ON b.id   = s.brand_id
 LEFT JOIN departments  d   ON d.id   = s.department_id
@@ -50,7 +66,13 @@ export async function listSops(f: ListFilters = {}): Promise<{ rows: Sop[]; tota
   }
   if (f.departmentId) {
     params.push(f.departmentId);
-    conditions.push(`s.department_id = $${params.length}`);
+    // Matches any of the SOP's departments, not just the first — the
+    // junction was backfilled from department_id, so single-department
+    // SOPs behave exactly as they did before migration 052.
+    conditions.push(
+      `EXISTS (SELECT 1 FROM sop_departments sd
+                WHERE sd.sop_id = s.id AND sd.department_id = $${params.length})`
+    );
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -89,6 +111,8 @@ export type CreateSopInput = {
   attachment_mime?: string | null;
   brand_id?: number | null;
   department_id?: number | null;
+  /** Every department this SOP applies to (migration 052). */
+  department_ids?: number[];
   owner_id?: number | null;
   effective_date?: string | null;
   review_date?: string | null;
@@ -109,57 +133,102 @@ export type CreateSopInput = {
   signatures_approval?: string | null;
 };
 
+/**
+ * Which departments a SOP applies to, resolved from the multi-select.
+ *
+ * `is_all_departments` already means "every department, including ones
+ * added later", so it wins outright and leaves the junction empty rather
+ * than freezing today's list into it. Otherwise the junction holds the
+ * chosen departments, and `department_id` mirrors the first of them so
+ * every pre-existing join and scope walk keeps resolving.
+ */
+function resolveDepartments(input: {
+  is_all_departments?: boolean;
+  department_ids?: number[];
+  department_id?: number | null;
+}): { departmentId: number | null; departmentIds: number[] } {
+  if (input.is_all_departments) return { departmentId: null, departmentIds: [] };
+
+  const ids = Array.from(
+    new Set((input.department_ids ?? []).filter((n) => Number.isInteger(n) && n > 0))
+  );
+  // Callers that predate the multi-select still send a single id.
+  if (ids.length === 0 && input.department_id != null) ids.push(input.department_id);
+
+  return { departmentId: ids[0] ?? null, departmentIds: ids };
+}
+
+/** Rewrite a SOP's department links inside an existing transaction. */
+async function replaceSopDepartments(
+  client: TxClient,
+  sopId: number,
+  departmentIds: number[]
+): Promise<void> {
+  await client.query(`DELETE FROM sop_departments WHERE sop_id = $1`, [sopId]);
+  for (const departmentId of departmentIds) {
+    await client.query(
+      `INSERT INTO sop_departments (sop_id, department_id)
+       VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [sopId, departmentId]
+    );
+  }
+}
+
 export async function createSop(input: CreateSopInput): Promise<number> {
   // brand_id is meaningless when brand_is_function is true (the SOP spans
   // every brand); same logic for is_all_departments. Force the *_id columns
   // to NULL in those cases so the data on disk doesn't disagree with the
   // semantic flag.
   const brandId = input.brand_is_function ? null : input.brand_id ?? null;
-  const departmentId = input.is_all_departments ? null : input.department_id ?? null;
+  const { departmentId, departmentIds } = resolveDepartments(input);
 
-  const row = await queryOne<{ id: number }>(
-    `INSERT INTO sops
-      (code, title, description, version, status, file_url,
-       attachment_data_url, attachment_name, attachment_mime,
-       brand_id, department_id, owner_id, created_by, effective_date, review_date,
-       brand_is_function, is_all_departments,
-       purpose, scope, process_flow, roles_responsibilities,
-       inputs_outputs, tools_forms, kpis,
-       ownership_review, appendices, signatures_approval)
-     VALUES ($1, $2, $3, $4, 'draft', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-             $15, $16,
-             $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
-     RETURNING id`,
-    [
-      input.code ?? null,
-      input.title,
-      input.description ?? null,
-      input.version ?? "1.0",
-      input.file_url ?? null,
-      input.attachment_data_url ?? null,
-      input.attachment_name ?? null,
-      input.attachment_mime ?? null,
-      brandId,
-      departmentId,
-      input.owner_id ?? input.created_by,
-      input.created_by,
-      input.effective_date ?? null,
-      input.review_date ?? null,
-      input.brand_is_function ?? false,
-      input.is_all_departments ?? false,
-      input.purpose ?? null,
-      input.scope ?? null,
-      input.process_flow ?? null,
-      input.roles_responsibilities ?? null,
-      input.inputs_outputs ?? null,
-      input.tools_forms ?? null,
-      input.kpis ?? null,
-      input.ownership_review ?? null,
-      input.appendices ?? null,
-      input.signatures_approval ?? null,
-    ]
-  );
-  return row!.id;
+  return withTransaction(async (client) => {
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO sops
+        (code, title, description, version, status, file_url,
+         attachment_data_url, attachment_name, attachment_mime,
+         brand_id, department_id, owner_id, created_by, effective_date, review_date,
+         brand_is_function, is_all_departments,
+         purpose, scope, process_flow, roles_responsibilities,
+         inputs_outputs, tools_forms, kpis,
+         ownership_review, appendices, signatures_approval)
+       VALUES ($1, $2, $3, $4, 'draft', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+               $15, $16,
+               $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+       RETURNING id`,
+      [
+        input.code ?? null,
+        input.title,
+        input.description ?? null,
+        input.version ?? "1.0",
+        input.file_url ?? null,
+        input.attachment_data_url ?? null,
+        input.attachment_name ?? null,
+        input.attachment_mime ?? null,
+        brandId,
+        departmentId,
+        input.owner_id ?? input.created_by,
+        input.created_by,
+        input.effective_date ?? null,
+        input.review_date ?? null,
+        input.brand_is_function ?? false,
+        input.is_all_departments ?? false,
+        input.purpose ?? null,
+        input.scope ?? null,
+        input.process_flow ?? null,
+        input.roles_responsibilities ?? null,
+        input.inputs_outputs ?? null,
+        input.tools_forms ?? null,
+        input.kpis ?? null,
+        input.ownership_review ?? null,
+        input.appendices ?? null,
+        input.signatures_approval ?? null,
+      ]
+    );
+    const sopId = rows[0].id;
+    await replaceSopDepartments(client, sopId, departmentIds);
+    return sopId;
+  });
 }
 
 export type UpdateSopInput = {
@@ -177,6 +246,8 @@ export type UpdateSopInput = {
   update_attachment: boolean;
   brand_id?: number | null;
   department_id?: number | null;
+  /** Every department this SOP applies to (migration 052). */
+  department_ids?: number[];
   owner_id?: number | null;
   effective_date?: string | null;
   review_date?: string | null;
@@ -205,66 +276,67 @@ export type UpdateSopInput = {
  */
 export async function updateSop(input: UpdateSopInput): Promise<void> {
   const brandId = input.brand_is_function ? null : input.brand_id ?? null;
-  const departmentId = input.is_all_departments
-    ? null
-    : input.department_id ?? null;
+  const { departmentId, departmentIds } = resolveDepartments(input);
 
-  await execute(
-    `UPDATE sops SET
-       code                   = $2,
-       title                  = $3,
-       description            = $4,
-       file_url               = $5,
-       attachment_data_url    = CASE WHEN $6  THEN $7  ELSE attachment_data_url END,
-       attachment_name        = CASE WHEN $6  THEN $8  ELSE attachment_name     END,
-       attachment_mime        = CASE WHEN $6  THEN $9  ELSE attachment_mime     END,
-       brand_id               = $10,
-       department_id          = $11,
-       owner_id               = COALESCE($12, owner_id),
-       effective_date         = $13,
-       review_date            = $14,
-       brand_is_function      = $15,
-       is_all_departments     = $16,
-       purpose                = $17,
-       scope                  = $18,
-       process_flow           = $19,
-       roles_responsibilities = $20,
-       inputs_outputs         = $21,
-       tools_forms            = $22,
-       kpis                   = $23,
-       ownership_review       = $24,
-       appendices             = $25,
-       signatures_approval    = $26
-     WHERE id = $1`,
-    [
-      input.id,
-      input.code ?? null,
-      input.title,
-      input.description ?? null,
-      input.file_url ?? null,
-      input.update_attachment,
-      input.attachment_data_url ?? null,
-      input.attachment_name ?? null,
-      input.attachment_mime ?? null,
-      brandId,
-      departmentId,
-      input.owner_id ?? null,
-      input.effective_date ?? null,
-      input.review_date ?? null,
-      input.brand_is_function ?? false,
-      input.is_all_departments ?? false,
-      input.purpose ?? null,
-      input.scope ?? null,
-      input.process_flow ?? null,
-      input.roles_responsibilities ?? null,
-      input.inputs_outputs ?? null,
-      input.tools_forms ?? null,
-      input.kpis ?? null,
-      input.ownership_review ?? null,
-      input.appendices ?? null,
-      input.signatures_approval ?? null,
-    ]
-  );
+  await withTransaction(async (client) => {
+    await client.query(
+      `UPDATE sops SET
+         code                   = $2,
+         title                  = $3,
+         description            = $4,
+         file_url               = $5,
+         attachment_data_url    = CASE WHEN $6  THEN $7  ELSE attachment_data_url END,
+         attachment_name        = CASE WHEN $6  THEN $8  ELSE attachment_name     END,
+         attachment_mime        = CASE WHEN $6  THEN $9  ELSE attachment_mime     END,
+         brand_id               = $10,
+         department_id          = $11,
+         owner_id               = COALESCE($12, owner_id),
+         effective_date         = $13,
+         review_date            = $14,
+         brand_is_function      = $15,
+         is_all_departments     = $16,
+         purpose                = $17,
+         scope                  = $18,
+         process_flow           = $19,
+         roles_responsibilities = $20,
+         inputs_outputs         = $21,
+         tools_forms            = $22,
+         kpis                   = $23,
+         ownership_review       = $24,
+         appendices             = $25,
+         signatures_approval    = $26
+       WHERE id = $1`,
+      [
+        input.id,
+        input.code ?? null,
+        input.title,
+        input.description ?? null,
+        input.file_url ?? null,
+        input.update_attachment,
+        input.attachment_data_url ?? null,
+        input.attachment_name ?? null,
+        input.attachment_mime ?? null,
+        brandId,
+        departmentId,
+        input.owner_id ?? null,
+        input.effective_date ?? null,
+        input.review_date ?? null,
+        input.brand_is_function ?? false,
+        input.is_all_departments ?? false,
+        input.purpose ?? null,
+        input.scope ?? null,
+        input.process_flow ?? null,
+        input.roles_responsibilities ?? null,
+        input.inputs_outputs ?? null,
+        input.tools_forms ?? null,
+        input.kpis ?? null,
+        input.ownership_review ?? null,
+        input.appendices ?? null,
+        input.signatures_approval ?? null,
+      ]
+    );
+    await replaceSopDepartments(client, input.id, departmentIds);
+  });
 }
 
 export async function setSopAttachment(

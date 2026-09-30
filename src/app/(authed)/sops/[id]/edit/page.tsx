@@ -6,6 +6,7 @@ import { queryAll } from "@/lib/db";
 import { updateSopAction } from "@/features/sops/actions";
 import { getSopById } from "@/features/sops/repository";
 import FilePicker from "@/features/sops/FilePicker";
+import MultiSelect from "@/features/admin/users/MultiSelect";
 import {
   SOP_SECTIONS,
   SOP_STATUS_LABEL,
@@ -107,28 +108,28 @@ export default async function EditSopPage({
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1.5">
-                Department
+              <MultiSelect
+                name="department_ids"
+                label="Departments"
+                options={departments}
+                defaultSelected={sop.department_ids}
+                placeholder="Select departments…"
+              />
+              <label className="flex items-center gap-2 text-xs text-gray-600 mt-2">
+                <input
+                  type="checkbox"
+                  name="department_id"
+                  value="__all__"
+                  defaultChecked={sop.is_all_departments}
+                  className="accent-brand-700"
+                />
+                ✦ Applies to all departments
               </label>
-              <select
-                name="department_id"
-                defaultValue={
-                  sop.is_all_departments
-                    ? "__all__"
-                    : sop.department_id
-                    ? String(sop.department_id)
-                    : ""
-                }
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-              >
-                <option value="">—</option>
-                <option value="__all__">✦ All departments</option>
-                {departments.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-              </select>
+              <p className="text-[11px] text-gray-400 mt-1">
+                Ticking &ldquo;all departments&rdquo; covers the whole
+                company — including ones added later — and ignores the
+                selection above.
+              </p>
             </div>
           </div>
 

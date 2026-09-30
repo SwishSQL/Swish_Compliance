@@ -288,7 +288,20 @@ export async function importGrcWorkbook(
             sopUrlByCode.get(code)?.url ?? null,
           ]
         );
-        sopIdByCode.set(code, res.rows[0].id);
+        const sopId = res.rows[0].id;
+        sopIdByCode.set(code, sopId);
+
+        // The workbook names exactly one department per SOP, but
+        // sop_departments (migration 052) is what access scoping and the
+        // acknowledgement queue read. Keep it in step with department_id
+        // or imported SOPs would be invisible to non-admins.
+        await client.query(
+          `INSERT INTO sop_departments (sop_id, department_id)
+           SELECT id, department_id FROM sops
+           WHERE id = $1 AND department_id IS NOT NULL
+           ON CONFLICT DO NOTHING`,
+          [sopId]
+        );
       }
       log.push(`SOPs: ${sopIdByCode.size} (status=approved)`);
       warnings.push(...sopReviewNotes.map((n) => `Review cycle: ${n}`));

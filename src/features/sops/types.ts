@@ -50,6 +50,11 @@ export type Sop = {
   // Scope flags (migration 020)
   brand_is_function: boolean;
   is_all_departments: boolean;
+  /** Every department this SOP applies to (migration 052). Empty when
+   *  is_all_departments is set, or when no department was chosen.
+   *  department_id above is the first of these. */
+  department_ids: number[];
+  department_names: string[];
   // ─── 10 structured sections from the Universal SOP Template ──────────
   purpose: string | null;
   scope: string | null;

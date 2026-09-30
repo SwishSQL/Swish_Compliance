@@ -18,23 +18,23 @@ export type AckStats = {
 };
 
 /**
- * "Eligible to acknowledge" = active users whose department matches the
- * SOP's department. If the SOP has no department, we fall back to ALL
- * active users so a company-wide SOP is acknowledged by everyone.
- * Admins are always eligible.
+ * "Eligible to acknowledge" = active users in ANY of the SOP's departments
+ * (migration 052 — a SOP can name several). A SOP with no departments at
+ * all still falls back to every active user, so a company-wide SOP is
+ * acknowledged by everyone. Admins are always eligible.
  */
 export async function eligibleUserIds(sopId: number): Promise<number[]> {
   const rows = await queryAll<{ id: number }>(
-    `WITH sop_dept AS (
-       SELECT department_id FROM sops WHERE id = $1
-     )
-     SELECT u.id
-     FROM users u, sop_dept sd
+    `SELECT u.id
+     FROM users u
      WHERE u.is_active
        AND (
          u.role = 'admin'
-         OR sd.department_id IS NULL
-         OR u.department_id = sd.department_id
+         OR NOT EXISTS (SELECT 1 FROM sop_departments sd WHERE sd.sop_id = $1)
+         OR EXISTS (
+           SELECT 1 FROM sop_departments sd
+           WHERE sd.sop_id = $1 AND sd.department_id = u.department_id
+         )
        )`,
     [sopId]
   );
@@ -130,8 +130,12 @@ export async function listSopsAwaitingAck(
      WHERE s.status = 'approved'
        AND (
          $2 = 'admin'
-         OR s.department_id IS NULL
-         OR s.department_id = $3
+         -- No departments named at all = company-wide (migration 052).
+         OR NOT EXISTS (SELECT 1 FROM sop_departments sd WHERE sd.sop_id = s.id)
+         OR EXISTS (
+           SELECT 1 FROM sop_departments sd
+           WHERE sd.sop_id = s.id AND sd.department_id = $3
+         )
        )
        AND NOT EXISTS (
          SELECT 1 FROM sop_acknowledgments a

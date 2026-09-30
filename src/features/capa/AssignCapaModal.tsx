@@ -99,7 +99,11 @@ export default function AssignCapaModal({
 
     startTransition(async () => {
       try {
-        await assignCapaFromFindingAction(fd);
+        const result = await assignCapaFromFindingAction(fd);
+        if (!result.ok) {
+          setError(result.error);
+          return;
+        }
         setOpen(false);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Assignment failed.");

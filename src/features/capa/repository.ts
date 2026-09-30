@@ -1,5 +1,9 @@
 import "server-only";
 import { queryAll, queryOne, execute } from "@/lib/db";
+import {
+  AUDIT_RESPONSE_SHORTFALL_SQL,
+  AUDIT_RESPONSE_PERFORMANCE_SQL,
+} from "@/features/audits/types";
 import type {
   Capa,
   CapaSeverity,
@@ -8,6 +12,10 @@ import type {
   CapaEvidence,
   CapaAuditorContext,
 } from "./types";
+
+/** What counts as a finding on an audit response aliased `r` — see
+ *  AUDIT_RESPONSE_SHORTFALL_SQL (migration 054) for the exact rule. */
+const SHORTFALL_SQL = AUDIT_RESPONSE_SHORTFALL_SQL;
 
 const CAPA_SELECT = `
   c.id, c.code, c.title, c.description, c.severity, c.status,
@@ -111,6 +119,12 @@ export async function getCapaAuditorContext(
         ORDER BY ch.id LIMIT 1) AS test_name,
        i.question,
        r.response      AS auditor_response,
+       r.yes_percent, r.no_percent, r.na_percent,
+       -- NULL when there's no linked response at all (standalone CAPA) or
+       -- the question was 100% N-A, same "excluded" meaning as elsewhere.
+       CASE WHEN r.yes_percent IS NOT NULL AND (r.yes_percent + r.no_percent) > 0
+            THEN ROUND(r.yes_percent * 100.0 / (r.yes_percent + r.no_percent))::int
+            ELSE NULL END AS performance_percent,
        r.notes         AS auditor_note,
        r.evidence_url  AS auditor_evidence_url,
        r.evidence_name AS auditor_evidence_name,
@@ -266,7 +280,7 @@ export async function listAuditFindings(filters: {
   due_date_before?: string;
   location?: string;
 } = {}): Promise<AuditFinding[]> {
-  const cond: string[] = ["r.response = 'fail'"];
+  const cond: string[] = [SHORTFALL_SQL];
   const params: unknown[] = [];
 
   if (filters.audit_id) {
@@ -337,6 +351,8 @@ export async function listAuditFindings(filters: {
         WHERE at.audit_id = a.id AND cci.checklist_item_id = i.id
         ORDER BY ch.id LIMIT 1) AS test_name,
        i.id AS item_id, i.code AS item_code, i.question, i.is_critical,
+       r.yes_percent, r.no_percent, r.na_percent,
+       ROUND(${AUDIT_RESPONSE_PERFORMANCE_SQL})::int AS performance_percent,
        r.notes        AS auditor_note,
        r.evidence_url, r.evidence_name, r.evidence_mime,
        ca.id          AS capa_id,
@@ -385,7 +401,7 @@ export async function listBulkAssignableFindings(
      JOIN checklist_items i ON i.id = r.item_id
      LEFT JOIN corrective_actions ca
        ON ca.source_audit_id = a.id AND ca.source_item_id = i.id
-     WHERE r.response = 'fail'
+     WHERE ${SHORTFALL_SQL}
        AND a.id = $1::int
        AND a.control_id IS NOT DISTINCT FROM $2::int
        AND a.status IN ('submitted','closed')
@@ -428,7 +444,7 @@ export async function autoCreateCapasForAudit(
        a.id, i.id, a.brand_id, a.department_id, d.manager_id, $2::int,
        CASE WHEN d.manager_id IS NOT NULL THEN 'in_progress' ELSE 'open' END
      FROM audits a
-     JOIN audit_responses r ON r.audit_id = a.id AND r.response = 'fail'
+     JOIN audit_responses r ON r.audit_id = a.id AND ${SHORTFALL_SQL}
      JOIN checklist_items i ON i.id = r.item_id
      LEFT JOIN departments d ON d.id = a.department_id
      CROSS JOIN (SELECT COUNT(*)::int AS n
@@ -456,6 +472,26 @@ export async function getAuditScope(
     `SELECT brand_id, department_id FROM audits WHERE id = $1`,
     [auditId]
   );
+}
+
+/**
+ * Same as getAuditScope but for many audits at once — used by the
+ * cross-audit bulk-assign action, which needs to re-verify (server-side)
+ * the real department of every selected finding's audit, not just one.
+ */
+export async function getAuditScopesMap(
+  auditIds: number[]
+): Promise<Map<number, { brand_id: number | null; department_id: number | null }>> {
+  if (auditIds.length === 0) return new Map();
+  const rows = await queryAll<{
+    id: number;
+    brand_id: number | null;
+    department_id: number | null;
+  }>(
+    `SELECT id, brand_id, department_id FROM audits WHERE id = ANY($1::int[])`,
+    [[...new Set(auditIds)]]
+  );
+  return new Map(rows.map((r) => [r.id, { brand_id: r.brand_id, department_id: r.department_id }]));
 }
 
 /**

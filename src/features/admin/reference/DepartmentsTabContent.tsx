@@ -5,6 +5,7 @@ import {
   toggleDepartmentAction,
 } from "./actions";
 import DepartmentManagerSelect from "./DepartmentManagerSelect";
+import DeleteEntityButton from "@/features/admin/delete/DeleteEntityButton";
 
 type Row = {
   id: number;
@@ -173,21 +174,28 @@ export default async function DepartmentsTabContent() {
                     </span>
                   )}
                 </td>
-                <td className="px-5 py-3 text-right">
-                  <form action={toggleDepartmentAction} className="inline-block">
-                    <input type="hidden" name="id" value={row.id} />
-                    <input type="hidden" name="is_active" value={row.is_active ? "" : "on"} />
-                    <button
-                      type="submit"
-                      className={`text-xs px-3 py-1 rounded-lg border transition-colors ${
-                        row.is_active
-                          ? "border-gray-300 text-gray-600 hover:bg-gray-100"
-                          : "border-emerald-300 text-emerald-700 hover:bg-emerald-50"
-                      }`}
-                    >
-                      {row.is_active ? "Deactivate" : "Activate"}
-                    </button>
-                  </form>
+                <td className="px-5 py-3">
+                  <div className="flex items-center justify-end gap-2">
+                    <form action={toggleDepartmentAction}>
+                      <input type="hidden" name="id" value={row.id} />
+                      <input type="hidden" name="is_active" value={row.is_active ? "" : "on"} />
+                      <button
+                        type="submit"
+                        className={`text-xs px-3 py-1 rounded-lg border transition-colors ${
+                          row.is_active
+                            ? "border-gray-300 text-gray-600 hover:bg-gray-100"
+                            : "border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                        }`}
+                      >
+                        {row.is_active ? "Deactivate" : "Activate"}
+                      </button>
+                    </form>
+                    <DeleteEntityButton
+                      entityType="department"
+                      entityId={row.id}
+                      label="Department"
+                    />
+                  </div>
                 </td>
               </tr>
               );

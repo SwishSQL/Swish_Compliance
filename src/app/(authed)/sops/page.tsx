@@ -28,7 +28,9 @@ export default async function SopsPage({
     : listed.rows.filter(
         (r) =>
           r.is_all_departments ||
-          (r.department_id != null && scope.departmentIds.includes(r.department_id))
+          // A SOP can name several departments (migration 052) — seeing any
+          // one of them in scope is enough.
+          r.department_ids.some((id) => scope.departmentIds.includes(id))
       );
   const total = rows.length;
 
@@ -135,7 +137,13 @@ export default async function SopsPage({
                   </Link>
                 </td>
                 <td className="px-5 py-3 text-gray-600">{sop.brand_name ?? "—"}</td>
-                <td className="px-5 py-3 text-gray-600">{sop.department_name ?? "—"}</td>
+                <td className="px-5 py-3 text-gray-600">
+                  {sop.is_all_departments
+                    ? "✦ All departments"
+                    : sop.department_names.length > 0
+                      ? sop.department_names.join(", ")
+                      : "—"}
+                </td>
                 <td className="px-5 py-3 text-gray-600">{sop.version}</td>
                 <td className="px-5 py-3">
                   <span

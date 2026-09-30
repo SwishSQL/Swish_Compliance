@@ -22,6 +22,7 @@ import {
   AUDIT_STATUS_LABEL,
   AUDIT_STATUS_TONE,
 } from "@/features/audits/types";
+import { FINDING_THRESHOLD_PERCENT } from "@/features/audits/types";
 import type { AuditScopeRow } from "@/features/audits/types";
 
 /** How the audit was scoped (migration 042). Legacy audits have no value. */
@@ -79,8 +80,16 @@ export default async function AuditDetailPage({
     scopeRows.filter((r) => r.response).map((r) => r.item_id)
   ).size;
   const uniqueTotal = new Set(scopeRows.map((r) => r.item_id)).size;
+  // A "finding" is any applicable answer under the threshold, not just an
+  // outright No, and not one that was entirely N-A (migration 054).
   const uniqueFailed = new Set(
-    scopeRows.filter((r) => r.response === "fail").map((r) => r.item_id)
+    scopeRows
+      .filter((r) => {
+        const applicable = (r.yes_percent ?? 0) + (r.no_percent ?? 0);
+        if (applicable === 0) return false;
+        return ((r.yes_percent ?? 0) / applicable) * 100 < FINDING_THRESHOLD_PERCENT;
+      })
+      .map((r) => r.item_id)
   ).size;
 
   // Seed for the shared answer state — one entry per DISTINCT item, for the
@@ -95,6 +104,9 @@ export default async function AuditDetailPage({
         {
           itemId: r.item_id,
           response: r.response as "pass" | "fail" | "na" | null,
+          yesPercent: r.yes_percent,
+          noPercent: r.no_percent,
+          naPercent: r.na_percent,
           notes: r.notes,
         },
       ])
@@ -138,8 +150,21 @@ export default async function AuditDetailPage({
               Audit scope
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-              <Field label="Policy / SOP">
-                {audit.policy_id ? (
+              <Field label={audit.policy_ids.length > 1 ? "Policies / SOPs" : "Policy / SOP"}>
+                {audit.policy_ids.length > 1 ? (
+                  <span className="flex flex-wrap gap-x-1.5 gap-y-1">
+                    {audit.policy_ids.map((id, i) => (
+                      <Link
+                        key={id}
+                        href={`/sops/${id}`}
+                        className="text-brand-700 hover:underline"
+                      >
+                        {audit.policy_titles[i]}
+                        {i < audit.policy_ids.length - 1 ? "," : ""}
+                      </Link>
+                    ))}
+                  </span>
+                ) : audit.policy_id ? (
                   <Link
                     href={`/sops/${audit.policy_id}`}
                     className="text-brand-700 hover:underline"
@@ -264,7 +289,9 @@ export default async function AuditDetailPage({
         <div className="text-xs text-gray-500 pt-3 border-t border-gray-100">
           {isOpen
             ? `Answered ${uniqueAnswered} of ${uniqueTotal} unique items${
-                uniqueFailed > 0 ? ` — ${uniqueFailed} marked No / fail` : ""
+                uniqueFailed > 0
+                  ? ` — ${uniqueFailed} below ${FINDING_THRESHOLD_PERCENT}%`
+                  : ""
               }`
             : audit.summary
             ? (

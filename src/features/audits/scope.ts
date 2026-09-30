@@ -111,7 +111,9 @@ export async function loadScopeGraph(): Promise<ScopeGraph> {
 }
 
 export type ResolveScopeInput = {
-  sopId: number;
+  /** One SOP for Framework/Domain scoping; several for a Full SOP Audit
+   *  that covers all of them at once (migration 055). */
+  sopIds: number[];
   departmentId: number;
   scopeType: ScopeType;
   domainId?: number | null;
@@ -135,11 +137,26 @@ export type ResolvedScope = {
  * is audited separately. A domain/framework qualifies when its OWN
  * department matches, falling back to its parent domain's when the
  * framework doesn't carry one.
+ *
+ * Framework and Domain audits narrow to exactly one SOP — picking several
+ * only makes sense as "audit everything", i.e. a Full SOP Audit run across
+ * all of them at once (migration 055), so that's the only mode that
+ * accepts more than one sopId.
  */
 export async function resolveScope(
   input: ResolveScopeInput
 ): Promise<ResolvedScope> {
-  const { sopId, departmentId, scopeType } = input;
+  const { sopIds, departmentId, scopeType } = input;
+
+  if (sopIds.length === 0) {
+    throw new Error("Pick at least one Policy / SOP.");
+  }
+  if (scopeType !== "full_sop" && sopIds.length > 1) {
+    throw new Error(
+      "Framework and Domain audits can only scope to a single Policy / SOP — " +
+        "pick Full SOP Audit to cover several at once."
+    );
+  }
 
   let frameworkRows: { id: number }[] = [];
 
@@ -157,7 +174,7 @@ export async function resolveScope(
          AND f.is_active
          AND COALESCE(f.sop_id, d.sop_id) = $2
          AND COALESCE(f.department_id, d.department_id) = $3`,
-      [input.frameworkId, sopId, departmentId]
+      [input.frameworkId, sopIds[0], departmentId]
     );
     if (frameworkRows.length === 0) {
       throw new Error(
@@ -176,19 +193,20 @@ export async function resolveScope(
          AND f.is_active
          AND d.sop_id = $2
          AND d.department_id = $3`,
-      [input.domainId, sopId, departmentId]
+      [input.domainId, sopIds[0], departmentId]
     );
   } else {
-    // full_sop — every framework under every domain of this SOP that
-    // belongs to the audited department.
+    // full_sop — every framework under every domain of ANY of the chosen
+    // SOPs that belongs to the audited department. One SOP or several,
+    // the same union query covers both.
     frameworkRows = await queryAll<{ id: number }>(
       `SELECT DISTINCT f.id
        FROM frameworks f
        LEFT JOIN domains d ON d.id = f.domain_id
        WHERE f.is_active
-         AND COALESCE(f.sop_id, d.sop_id) = $1
+         AND COALESCE(f.sop_id, d.sop_id) = ANY($1::int[])
          AND COALESCE(f.department_id, d.department_id) = $2`,
-      [sopId, departmentId]
+      [sopIds, departmentId]
     );
   }
 

@@ -10,16 +10,29 @@ export default function MultiSelect({
   options,
   defaultSelected = [],
   placeholder = "Select…",
+  onChange,
 }: {
   name: string;            // form field name (will be sent repeated, e.g. brand_ids)
   label: string;
   options: Option[];
   defaultSelected?: number[];
   placeholder?: string;
+  /** Optional — lets a parent that needs to react live to the selection
+   *  (e.g. adjust other fields) observe it. Most callers just let the
+   *  hidden inputs carry the value on submit and don't need this. */
+  onChange?: (selected: number[]) => void;
 }) {
-  const [selected, setSelected] = useState<number[]>(defaultSelected);
+  const [selected, setSelectedState] = useState<number[]>(defaultSelected);
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
+
+  function setSelected(update: number[] | ((prev: number[]) => number[])) {
+    setSelectedState((prev) => {
+      const next = typeof update === "function" ? update(prev) : update;
+      onChange?.(next);
+      return next;
+    });
+  }
 
   const optionById = useMemo(() => {
     const m = new Map<number, string>();
@@ -43,7 +56,9 @@ export default function MultiSelect({
 
   return (
     <div className="relative">
-      <label className="block text-xs font-medium text-gray-600 mb-1.5">{label}</label>
+      {label && (
+        <label className="block text-xs font-medium text-gray-600 mb-1.5">{label}</label>
+      )}
 
       {/* Hidden inputs that actually get submitted with the form */}
       {selected.map((id) => (

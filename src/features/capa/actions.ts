@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requireUser, canApproveSops, canDeleteOrArchive } from "@/lib/auth/guard";
+import { getUserScope } from "@/lib/auth/access";
 import { execute } from "@/lib/db";
 import {
   createCapa,
@@ -13,6 +14,7 @@ import {
   upsertCapaFromFinding,
   listBulkAssignableFindings,
   getAuditScope,
+  getAuditScopesMap,
   saveCapaExecution,
   setCapaRejectionReason,
   addCapaEvidence,
@@ -397,11 +399,19 @@ const AssignFromFindingSchema = z.object({
  * otherwise updates the existing one with the new assignment metadata.
  * Fires "capa:assigned" notifications to the assignee and reviewer.
  *
- * Gated to compliance / BE / admin (assign is a reviewer prerogative).
- * The audit creator is also allowed because they can drive follow-ups
- * on their own audits.
+ * Gated to compliance / BE / admin (assign is a reviewer prerogative), plus
+ * department managers assigning within their own department (user spec
+ * 2026-09-10) — verified against the audit's actual department server-side
+ * via getAuditScope, never trusting the client-supplied department_id.
+ *
+ * Returns {ok,error} instead of throwing: a thrown Server Action error gets
+ * redacted by Next.js in production into a generic digest-only message, so
+ * every failure path here must return instead (see saveResponsesBulkAction
+ * for the same established pattern).
  */
-export async function assignCapaFromFindingAction(formData: FormData) {
+export async function assignCapaFromFindingAction(
+  formData: FormData
+): Promise<{ ok: true; id: number } | { ok: false; error: string }> {
   const user = await requireUser();
   const raw = Object.fromEntries(formData.entries());
   const parsed = AssignFromFindingSchema.parse({
@@ -415,14 +425,25 @@ export async function assignCapaFromFindingAction(formData: FormData) {
       raw.assignment_note === "" ? null : raw.assignment_note,
   });
 
-  const isAllowed =
+  const isReviewerRole =
     user.role === "admin" ||
     user.role === "compliance" ||
     user.role === "business_excellence";
+
+  let isAllowed = isReviewerRole;
+  if (!isAllowed && user.role === "department_manager") {
+    const auditScope = await getAuditScope(parsed.audit_id);
+    const scope = await getUserScope(user.id, user.role);
+    isAllowed =
+      !!auditScope?.department_id &&
+      scope.departmentIds.includes(auditScope.department_id);
+  }
   if (!isAllowed) {
-    throw new Error(
-      "Only Compliance, Business Excellence, or admin can assign CAPAs."
-    );
+    return {
+      ok: false,
+      error:
+        "Only Compliance, Business Excellence, admin, or the department's own manager can assign CAPAs.",
+    };
   }
 
   const { id, code, created } = await upsertCapaFromFinding({
@@ -495,6 +516,7 @@ export async function assignCapaFromFindingAction(formData: FormData) {
 
   revalidatePath("/capa");
   revalidatePath(`/capa/${id}`);
+  return { ok: true, id };
 }
 
 const AssignControlSchema = z.object({
@@ -521,7 +543,11 @@ const AssignControlSchema = z.object({
  * per-finding flow. Notifications are collapsed into ONE summary per
  * recipient instead of one per CAPA.
  */
-export async function assignControlCapasAction(formData: FormData) {
+export async function assignControlCapasAction(
+  formData: FormData
+): Promise<
+  { ok: true; assigned: number } | { ok: false; error: string }
+> {
   const user = await requireUser();
   const raw = Object.fromEntries(formData.entries());
   const parsed = AssignControlSchema.parse({
@@ -533,14 +559,26 @@ export async function assignControlCapasAction(formData: FormData) {
     assignment_note: raw.assignment_note === "" ? null : raw.assignment_note,
   });
 
-  const isAllowed =
+  const auditScope = await getAuditScope(parsed.audit_id);
+
+  const isReviewerRole =
     user.role === "admin" ||
     user.role === "compliance" ||
     user.role === "business_excellence";
+
+  let isAllowed = isReviewerRole;
+  if (!isAllowed && user.role === "department_manager") {
+    const userScope = await getUserScope(user.id, user.role);
+    isAllowed =
+      !!auditScope?.department_id &&
+      userScope.departmentIds.includes(auditScope.department_id);
+  }
   if (!isAllowed) {
-    throw new Error(
-      "Only Compliance, Business Excellence, or admin can assign CAPAs."
-    );
+    return {
+      ok: false,
+      error:
+        "Only Compliance, Business Excellence, admin, or the department's own manager can assign CAPAs.",
+    };
   }
 
   const findings = await listBulkAssignableFindings(
@@ -548,12 +586,14 @@ export async function assignControlCapasAction(formData: FormData) {
     parsed.control_id ?? null
   );
   if (findings.length === 0) {
-    throw new Error(
-      "Nothing to assign — every finding under this control already has an assignee."
-    );
+    return {
+      ok: false,
+      error:
+        "Nothing to assign — every finding under this control already has an assignee.",
+    };
   }
 
-  const scope = await getAuditScope(parsed.audit_id);
+  const scope = auditScope;
 
   const capas: { id: number; code: string }[] = [];
   for (const f of findings) {
@@ -629,7 +669,163 @@ export async function assignControlCapasAction(formData: FormData) {
   }
 
   revalidatePath("/capa");
-  return { assigned: capas.length };
+  return { ok: true, assigned: capas.length };
+}
+
+const BulkSelectionItemSchema = z.object({
+  audit_id: z.number().int().positive(),
+  item_id: z.number().int().positive(),
+  title: z.string().trim().min(1),
+});
+
+const AssignBulkSchema = z.object({
+  items: z.string().min(1),
+  severity: z.enum(["low", "medium", "high", "critical"]),
+  assigned_to: z.coerce.number().int().positive(),
+  reviewer_id: z.coerce.number().int().positive().optional().nullable(),
+  start_date: z.string().optional().nullable(),
+  due_date: z.string().optional().nullable(),
+  assignment_note: z.string().trim().optional().nullable(),
+});
+
+/**
+ * "Assign selected" button on the /capa page: the user hand-picks any mix
+ * of findings (via checkboxes, possibly spanning several audits/controls)
+ * and assigns them all at once with one set of choices. Unlike
+ * assignControlCapasAction (which grabs every unassigned finding under ONE
+ * control), the finding list here is exactly what the client selected —
+ * sent as a JSON array of {audit_id, item_id, title} in the `items` field.
+ *
+ * Gated the same as the other two assign actions: compliance / BE / admin,
+ * plus a department manager whose own department covers EVERY selected
+ * finding's audit (verified server-side via getAuditScopesMap against
+ * getUserScope — never trusting the client). Fails closed: if even one
+ * selected finding is outside the department manager's scope, the whole
+ * batch is rejected rather than silently dropping it.
+ */
+export async function assignBulkCapasAction(
+  formData: FormData
+): Promise<{ ok: true; assigned: number } | { ok: false; error: string }> {
+  const user = await requireUser();
+  const raw = Object.fromEntries(formData.entries());
+  const parsed = AssignBulkSchema.parse({
+    ...raw,
+    reviewer_id: raw.reviewer_id === "" ? null : raw.reviewer_id,
+    start_date: raw.start_date === "" ? null : raw.start_date,
+    due_date: raw.due_date === "" ? null : raw.due_date,
+    assignment_note: raw.assignment_note === "" ? null : raw.assignment_note,
+  });
+
+  let itemsRaw: unknown;
+  try {
+    itemsRaw = JSON.parse(parsed.items);
+  } catch {
+    return { ok: false, error: "Invalid selection payload." };
+  }
+  const itemsResult = z.array(BulkSelectionItemSchema).safeParse(itemsRaw);
+  if (!itemsResult.success || itemsResult.data.length === 0) {
+    return { ok: false, error: "No findings selected." };
+  }
+  const items = itemsResult.data;
+
+  const auditIds = items.map((i) => i.audit_id);
+  const scopesByAudit = await getAuditScopesMap(auditIds);
+
+  const isReviewerRole =
+    user.role === "admin" ||
+    user.role === "compliance" ||
+    user.role === "business_excellence";
+
+  let isAllowed = isReviewerRole;
+  if (!isAllowed && user.role === "department_manager") {
+    const userScope = await getUserScope(user.id, user.role);
+    isAllowed = items.every((i) => {
+      const deptId = scopesByAudit.get(i.audit_id)?.department_id;
+      return !!deptId && userScope.departmentIds.includes(deptId);
+    });
+  }
+  if (!isAllowed) {
+    return {
+      ok: false,
+      error:
+        "Only Compliance, Business Excellence, admin, or the department's own manager can assign CAPAs — and a department manager can only assign findings inside their own department.",
+    };
+  }
+
+  const capas: { id: number; code: string }[] = [];
+  for (const item of items) {
+    const scope = scopesByAudit.get(item.audit_id);
+    const { id, code } = await upsertCapaFromFinding({
+      audit_id: item.audit_id,
+      item_id: item.item_id,
+      title: item.title.slice(0, 250),
+      severity: parsed.severity,
+      brand_id: scope?.brand_id ?? null,
+      department_id: scope?.department_id ?? null,
+      assigned_to: parsed.assigned_to,
+      reviewer_id: parsed.reviewer_id,
+      start_date: parsed.start_date,
+      due_date: parsed.due_date,
+      assignment_note: parsed.assignment_note,
+      created_by: user.id,
+    });
+    capas.push({ id, code });
+  }
+
+  await execute(
+    `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
+     VALUES ($1, $2, 'capa:bulk_assigned_from_selection', 'capa', $3, $4)`,
+    [
+      user.id,
+      user.email,
+      capas[0]?.id ?? null,
+      JSON.stringify({
+        assigned_to: parsed.assigned_to,
+        reviewer_id: parsed.reviewer_id,
+        severity: parsed.severity,
+        capa_count: capas.length,
+        capa_ids: capas.map((c) => c.id),
+        audit_ids: [...new Set(auditIds)],
+        by_user_name: user.displayName,
+      }),
+    ]
+  );
+
+  const capaListHref = `/capa`;
+
+  if (parsed.assigned_to !== user.id) {
+    await notify({
+      audience: { userIds: [parsed.assigned_to] },
+      actor: { id: user.id, name: user.displayName, role: user.role },
+      kind: "capa:assigned",
+      title: `${capas.length} CAPA${capas.length === 1 ? "" : "s"} assigned to you`,
+      body:
+        `Severity: ${parsed.severity}.` +
+        (parsed.due_date ? ` Due ${parsed.due_date}.` : "") +
+        (parsed.assignment_note ? ` Note: "${parsed.assignment_note}"` : "") +
+        ` (${capas.map((c) => c.code).join(", ")})`,
+      severity: parsed.severity === "critical" ? "critical" : "info",
+      entity: { type: "capa", id: capas[0]?.id ?? 0, href: capaListHref },
+    });
+  }
+  if (
+    parsed.reviewer_id &&
+    parsed.reviewer_id !== user.id &&
+    parsed.reviewer_id !== parsed.assigned_to
+  ) {
+    await notify({
+      audience: { userIds: [parsed.reviewer_id] },
+      actor: { id: user.id, name: user.displayName, role: user.role },
+      kind: "capa:reviewer_assigned",
+      title: `You're the reviewer on ${capas.length} CAPA${capas.length === 1 ? "" : "s"}`,
+      body: `${user.displayName} assigned you to verify these CAPAs once the fixes are submitted.`,
+      severity: "info",
+      entity: { type: "capa", id: capas[0]?.id ?? 0, href: capaListHref },
+    });
+  }
+
+  revalidatePath("/capa");
+  return { ok: true, assigned: capas.length };
 }
 
 const AssignSchema = z.object({

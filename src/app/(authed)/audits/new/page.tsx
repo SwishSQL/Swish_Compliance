@@ -221,7 +221,8 @@ export default async function NewAuditPage() {
                 "Everything is loaded automatically from the scope you select.",
                 "Each audit is tied to exactly one department.",
                 "If a SOP spans several departments, create a separate audit per department.",
-                "Framework is the deepest level you can scope to.",
+                "Pick several policies to cover them all in one Full SOP Audit instead of one per policy.",
+                "Framework/Domain scoping only narrows a single policy at a time.",
               ].map((line) => (
                 <li key={line} className="flex gap-2">
                   <span className="text-green-600 shrink-0" aria-hidden="true">

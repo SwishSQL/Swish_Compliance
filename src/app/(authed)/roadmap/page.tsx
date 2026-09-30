@@ -3,6 +3,11 @@ import { requireUser } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { queryAll, queryOne } from "@/lib/db";
 import {
+  AUDIT_RESPONSE_ANSWERED_SQL,
+  AUDIT_RESPONSE_PERFORMANCE_SQL,
+  AUDIT_RESPONSE_SHORTFALL_SQL,
+} from "@/features/audits/types";
+import {
   CAPA_STATUS_LABEL,
   CAPA_STATUS_TONE,
   CAPA_UNASSIGNED_TONE,
@@ -133,16 +138,23 @@ export default async function RoadmapPage({
        WHERE a.status IN ('submitted','closed') AND a.framework_id IS NOT NULL
        ORDER BY a.framework_id, a.control_id, a.audit_date DESC, a.id DESC
      )
+     -- Answers are graded 0-100 (migration 054): weight is earned in
+     -- proportion to Yes's share of the applicable (Yes+No) samples, and
+     -- anything below the threshold is a finding — a 100%-N-A question
+     -- counts toward neither total nor passed weight.
      SELECT l.framework_id,
-       COALESCE(SUM(CASE WHEN r.response IN ('pass','fail') THEN i.weight ELSE 0 END),0)::int AS total_w,
-       COALESCE(SUM(CASE WHEN r.response = 'pass' THEN i.weight ELSE 0 END),0)::int           AS passed_w,
-       COALESCE(SUM(CASE WHEN r.response = 'fail'
+       COALESCE(SUM(CASE WHEN ${AUDIT_RESPONSE_ANSWERED_SQL} THEN i.weight ELSE 0 END),0)::int AS total_w,
+       COALESCE(SUM(
+         CASE WHEN ${AUDIT_RESPONSE_ANSWERED_SQL}
+              THEN i.weight * ${AUDIT_RESPONSE_PERFORMANCE_SQL} / 100.0
+              ELSE 0 END),0)::float                                                            AS passed_w,
+       COALESCE(SUM(CASE WHEN ${AUDIT_RESPONSE_SHORTFALL_SQL}
                           AND ca.status IN ('verified','closed')
                          THEN i.weight ELSE 0 END),0)::int                                    AS remediated_w,
-       (COUNT(*) FILTER (WHERE r.response = 'pass'))::int                                     AS passed_n,
-       (COUNT(*) FILTER (WHERE r.response = 'fail'
+       (COUNT(*) FILTER (WHERE ${AUDIT_RESPONSE_ANSWERED_SQL} AND NOT (${AUDIT_RESPONSE_SHORTFALL_SQL})))::int AS passed_n,
+       (COUNT(*) FILTER (WHERE ${AUDIT_RESPONSE_SHORTFALL_SQL}
                           AND ca.status IN ('verified','closed')))::int                       AS remediated_n,
-       (COUNT(*) FILTER (WHERE r.response = 'fail'
+       (COUNT(*) FILTER (WHERE ${AUDIT_RESPONSE_SHORTFALL_SQL}
                           AND (ca.id IS NULL OR ca.status NOT IN ('verified','closed'))))::int AS open_failed_n
      FROM latest l
      JOIN audit_responses r ON r.audit_id = l.id
@@ -196,7 +208,7 @@ export default async function RoadmapPage({
      LEFT JOIN corrective_actions ca
        ON ca.source_audit_id = a.id AND ca.source_item_id = i.id
      LEFT JOIN users      u    ON u.id  = ca.assigned_to
-     WHERE r.response = 'fail'
+     WHERE ${AUDIT_RESPONSE_SHORTFALL_SQL}
        AND a.status IN ('submitted','closed')
        AND (ca.id IS NULL
             OR ca.status IN ('open','in_progress','submitted','rejected'))

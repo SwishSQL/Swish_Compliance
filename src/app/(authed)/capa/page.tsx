@@ -17,6 +17,9 @@ import { queryAll } from "@/lib/db";
 import { getUserScope } from "@/lib/auth/access";
 import AssignCapaModal from "@/features/capa/AssignCapaModal";
 import AssignControlModal from "@/features/capa/AssignControlModal";
+import { BulkSelectionProvider } from "@/features/capa/BulkSelection";
+import FindingCheckbox from "@/features/capa/FindingCheckbox";
+import BulkAssignBar from "@/features/capa/BulkAssignBar";
 
 /**
  * Corrective Actions page — hierarchical view driven by the audit that
@@ -219,6 +222,7 @@ export default async function CapaPage({
           No failed audit findings match these filters.
         </div>
       )}
+      <BulkSelectionProvider>
       <div className="space-y-4">
         {audits.map((audit) => {
           const scorePct =
@@ -381,6 +385,8 @@ export default async function CapaPage({
           );
         })}
       </div>
+      <BulkAssignBar assignableUsers={assignableUsers} reviewers={reviewers} />
+      </BulkSelectionProvider>
     </Workspace>
   );
 }
@@ -506,9 +512,27 @@ function FindingRow({
   return (
     <li className="px-5 py-3">
       <div className="flex items-start justify-between gap-3">
+        <FindingCheckbox
+          finding={{
+            itemId: finding.item_id,
+            auditId: finding.audit_id,
+            question: finding.question,
+          }}
+        />
         <div className="flex-1 min-w-0">
           <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-1">
             Finding #{index}
+            <span
+              className="ml-2 inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-800 rounded"
+              title={`Yes ${finding.yes_percent}% · No ${finding.no_percent}% · N/A ${finding.na_percent}%`}
+            >
+              {finding.performance_percent}% achieved
+            </span>
+            {finding.na_percent > 0 && (
+              <span className="ml-2 text-[10px] text-gray-400">
+                ({finding.na_percent}% N/A excluded)
+              </span>
+            )}
             {finding.is_critical && (
               <span className="ml-2 inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium bg-red-100 text-red-700 rounded">
                 CRITICAL

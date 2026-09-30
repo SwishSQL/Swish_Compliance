@@ -5,6 +5,7 @@ import Workspace from "@/features/shell/Workspace";
 import { queryAll } from "@/lib/db";
 import { createSopAction } from "@/features/sops/actions";
 import FilePicker from "@/features/sops/FilePicker";
+import MultiSelect from "@/features/admin/users/MultiSelect";
 import { SOP_SECTIONS } from "@/features/sops/types";
 
 export default async function NewSopPage() {
@@ -78,21 +79,26 @@ export default async function NewSopPage() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1.5">
-                Department
+              <MultiSelect
+                name="department_ids"
+                label="Departments"
+                options={departments}
+                placeholder="Select departments…"
+              />
+              <label className="flex items-center gap-2 text-xs text-gray-600 mt-2">
+                <input
+                  type="checkbox"
+                  name="department_id"
+                  value="__all__"
+                  className="accent-brand-700"
+                />
+                ✦ Applies to all departments
               </label>
-              <select
-                name="department_id"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-              >
-                <option value="">—</option>
-                <option value="__all__">✦ All departments</option>
-                {departments.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-              </select>
+              <p className="text-[11px] text-gray-400 mt-1">
+                Pick every department this SOP applies to, or tick
+                &ldquo;all departments&rdquo; to cover the whole company —
+                including ones added later.
+              </p>
             </div>
           </div>
 

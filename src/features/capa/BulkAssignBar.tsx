@@ -1,37 +1,25 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { assignControlCapasAction } from "./actions";
+import { useBulkSelection } from "./BulkSelection";
+import { assignBulkCapasAction } from "./actions";
 
 type UserOpt = { id: number; display_name: string; role?: string | null };
 
-type ControlContext = {
-  auditId: number;
-  controlId: number | null;
-  controlCode: string | null;
-  controlName: string | null;
-  auditTitle: string;
-  /** Findings under this control with no assignee yet. */
-  unassignedCount: number;
-  /** Findings under this control that already have an assignee. */
-  assignedCount: number;
-};
-
 /**
- * Bulk assignment popup bound to a whole CONTROL inside one audit.
- * Same fields as the per-finding AssignCapaModal; on save, every
- * still-unassigned finding under the control gets a CAPA with these
- * choices. Findings already assigned to someone are never touched.
+ * Floating action bar that appears once at least one FindingCheckbox
+ * (anywhere on the /capa page, across any control/test/audit) is ticked.
+ * Opens a modal collecting the same fields as a single assignment, then
+ * applies them to every selected finding in one call.
  */
-export default function AssignControlModal({
-  control,
+export default function BulkAssignBar({
   assignableUsers,
   reviewers,
 }: {
-  control: ControlContext;
   assignableUsers: UserOpt[];
   reviewers: UserOpt[];
 }) {
+  const { selected, clear } = useBulkSelection();
   const [open, setOpen] = useState(false);
   const [severity, setSeverity] = useState<string>("medium");
   const [assignedTo, setAssignedTo] = useState<string>("");
@@ -41,6 +29,8 @@ export default function AssignControlModal({
   const [note, setNote] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+
+  const count = selected.size;
 
   useEffect(() => {
     if (!open) return;
@@ -74,15 +64,13 @@ export default function AssignControlModal({
       return;
     }
     setError(null);
+    const items = Array.from(selected.values()).map((f) => ({
+      audit_id: f.auditId,
+      item_id: f.itemId,
+      title: f.question.slice(0, 250),
+    }));
     const fd = new FormData();
-    fd.append("audit_id", String(control.auditId));
-    if (control.controlId != null)
-      fd.append("control_id", String(control.controlId));
-    fd.append(
-      "control_label",
-      [control.controlCode, control.controlName].filter(Boolean).join(" ") ||
-        control.auditTitle
-    );
+    fd.append("items", JSON.stringify(items));
     fd.append("severity", severity);
     fd.append("assigned_to", assignedTo);
     if (reviewerId) fd.append("reviewer_id", reviewerId);
@@ -92,31 +80,42 @@ export default function AssignControlModal({
 
     startTransition(async () => {
       try {
-        const result = await assignControlCapasAction(fd);
+        const result = await assignBulkCapasAction(fd);
         if (!result.ok) {
           setError(result.error);
           return;
         }
         setOpen(false);
+        clear();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Assignment failed.");
       }
     });
   }
 
-  // Nothing left to assign — no button, the per-finding "Edit
-  // assignment" buttons are the right tool from here on.
-  if (control.unassignedCount === 0) return null;
+  if (count === 0) return null;
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-amber-600 text-white hover:bg-amber-700 transition-colors"
-      >
-        Assign control ({control.unassignedCount})
-      </button>
+      <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-40 bg-gray-900 text-white rounded-full shadow-2xl px-5 py-2.5 flex items-center gap-4 animate-[fadeIn_120ms_ease-out]">
+        <span className="text-sm font-medium">
+          {count} finding{count === 1 ? "" : "s"} selected
+        </span>
+        <button
+          type="button"
+          onClick={clear}
+          className="text-xs text-gray-300 hover:text-white"
+        >
+          Clear
+        </button>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold px-3.5 py-1.5 rounded-full"
+        >
+          Assign selected
+        </button>
+      </div>
 
       {open && (
         <div
@@ -132,12 +131,10 @@ export default function AssignControlModal({
             <div className="sticky top-0 z-10 bg-white border-b border-gray-100 px-6 py-4 flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="text-lg font-bold text-gray-900">
-                  Assign Whole Control
+                  Assign {count} Corrective Action{count === 1 ? "" : "s"}
                 </h2>
                 <div className="text-xs text-gray-500 mt-0.5">
-                  {control.unassignedCount} finding
-                  {control.unassignedCount === 1 ? "" : "s"} will get a CAPA
-                  with these choices
+                  Every selected finding gets a CAPA with these choices.
                 </div>
               </div>
               <button
@@ -151,45 +148,17 @@ export default function AssignControlModal({
             </div>
 
             <form onSubmit={submit} className="px-6 py-5 space-y-4">
-              {/* Read-only context */}
-              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2">
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-0.5">
-                    Source
-                  </div>
-                  <div className="text-xs text-gray-800">
-                    {control.auditTitle}
-                  </div>
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 max-h-40 overflow-y-auto">
+                <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-1.5">
+                  Selected findings
                 </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-0.5">
-                    Control
-                  </div>
-                  <div className="text-sm text-gray-900">
-                    {control.controlCode && (
-                      <span className="font-mono text-xs text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded mr-2">
-                        {control.controlCode}
-                      </span>
-                    )}
-                    {control.controlName ?? "— No control linked —"}
-                  </div>
-                </div>
-                <div className="text-xs text-gray-600">
-                  Applies to the{" "}
-                  <span className="font-semibold">
-                    {control.unassignedCount} unassigned
-                  </span>{" "}
-                  finding{control.unassignedCount === 1 ? "" : "s"} under this
-                  control.
-                  {control.assignedCount > 0 && (
-                    <>
-                      {" "}
-                      The {control.assignedCount} already-assigned finding
-                      {control.assignedCount === 1 ? "" : "s"} will NOT be
-                      changed.
-                    </>
-                  )}
-                </div>
+                <ul className="space-y-1">
+                  {Array.from(selected.values()).map((f) => (
+                    <li key={f.itemId} className="text-xs text-gray-700 truncate">
+                      • {f.question}
+                    </li>
+                  ))}
+                </ul>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -308,11 +277,9 @@ export default function AssignControlModal({
                 <button
                   type="submit"
                   disabled={pending}
-                  className="bg-amber-600 hover:bg-amber-700 text-white px-5 py-2 rounded-lg text-sm font-semibold disabled:opacity-60"
+                  className="bg-brand-700 hover:bg-brand-800 text-white px-5 py-2 rounded-lg text-sm font-semibold disabled:opacity-60"
                 >
-                  {pending
-                    ? "Assigning…"
-                    : `Assign ${control.unassignedCount} & Notify`}
+                  {pending ? "Assigning…" : `Assign ${count} & Notify`}
                 </button>
               </div>
             </form>

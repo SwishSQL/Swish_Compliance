@@ -24,7 +24,8 @@ export type EntityType =
   | "checklist_template"
   | "audit"
   | "capa"
-  | "brand";
+  | "brand"
+  | "department";
 
 const ENTITY_TABLE: Record<EntityType, string> = {
   sop: "sops",
@@ -35,6 +36,7 @@ const ENTITY_TABLE: Record<EntityType, string> = {
   audit: "audits",
   capa: "corrective_actions",
   brand: "brands",
+  department: "departments",
 };
 
 export const ENTITY_LABEL: Record<EntityType, string> = {
@@ -46,6 +48,7 @@ export const ENTITY_LABEL: Record<EntityType, string> = {
   audit: "Audit",
   capa: "Corrective action",
   brand: "Brand",
+  department: "Department",
 };
 
 export const ENTITY_LIST_PATH: Record<EntityType, string> = {
@@ -57,6 +60,7 @@ export const ENTITY_LIST_PATH: Record<EntityType, string> = {
   audit: "/audits",
   capa: "/capa",
   brand: "/admin/config?tab=brands",
+  department: "/admin/config?tab=departments",
 };
 
 export type ImpactRow = {
@@ -135,8 +139,18 @@ export async function getDeleteImpact(
           cascaded: false,
         },
         {
+          // Counts every audit that names this SOP at all (migration
+          // 055 — an audit can cover several), not just the ones where
+          // it happens to be the first/primary one.
           label: "Audits scoped to this SOP (will be unlinked, kept)",
-          count: await impactCount(`SELECT COUNT(*) n FROM audits WHERE policy_id = $1`, id),
+          count: await impactCount(
+            `SELECT COUNT(*) n FROM (
+               SELECT id FROM audits WHERE policy_id = $1
+               UNION
+               SELECT audit_id FROM audit_sops WHERE sop_id = $1
+             ) x`,
+            id
+          ),
           cascaded: false,
         },
       ];
@@ -314,6 +328,76 @@ export async function getDeleteImpact(
           label: "Corrective actions scoped to this brand (will be unlinked, kept)",
           count: await impactCount(
             `SELECT COUNT(*) n FROM corrective_actions WHERE brand_id = $1`,
+            id
+          ),
+          cascaded: false,
+        },
+      ];
+      break;
+    }
+    case "department": {
+      // Every FK into departments is ON DELETE SET NULL except
+      // user_departments, which CASCADEs (see sql/007_user_multi_scope.sql).
+      // Nothing here blocks the delete, but SOPs / audits / CAPAs losing
+      // their department is a real governance change, so it is spelled out
+      // rather than hidden behind a generic warning.
+      rows = [
+        {
+          label: "User access grants for this department",
+          count: await impactCount(
+            `SELECT COUNT(*) n FROM user_departments WHERE department_id = $1`,
+            id
+          ),
+          cascaded: true,
+        },
+        {
+          label: "Users with this as their home department (will be unlinked, kept)",
+          count: await impactCount(`SELECT COUNT(*) n FROM users WHERE department_id = $1`, id),
+          cascaded: false,
+        },
+        {
+          label: "Sub-departments under it (will become top-level, kept)",
+          count: await impactCount(
+            `SELECT COUNT(*) n FROM departments WHERE parent_department_id = $1`,
+            id
+          ),
+          cascaded: false,
+        },
+        {
+          label: "SOPs that apply to this department (the SOPs are kept)",
+          count: await impactCount(
+            `SELECT COUNT(*) n FROM sop_departments WHERE department_id = $1`,
+            id
+          ),
+          cascaded: true,
+        },
+        {
+          label: "SOPs owned by this department (will be unlinked, kept)",
+          count: await impactCount(`SELECT COUNT(*) n FROM sops WHERE department_id = $1`, id),
+          cascaded: false,
+        },
+        {
+          label: "Domains scoped to this department (will be unlinked, kept)",
+          count: await impactCount(`SELECT COUNT(*) n FROM domains WHERE department_id = $1`, id),
+          cascaded: false,
+        },
+        {
+          label: "Frameworks scoped to this department (will be unlinked, kept)",
+          count: await impactCount(
+            `SELECT COUNT(*) n FROM frameworks WHERE department_id = $1`,
+            id
+          ),
+          cascaded: false,
+        },
+        {
+          label: "Audits of this department (will be unlinked, kept)",
+          count: await impactCount(`SELECT COUNT(*) n FROM audits WHERE department_id = $1`, id),
+          cascaded: false,
+        },
+        {
+          label: "Corrective actions for this department (will be unlinked, kept)",
+          count: await impactCount(
+            `SELECT COUNT(*) n FROM corrective_actions WHERE department_id = $1`,
             id
           ),
           cascaded: false,

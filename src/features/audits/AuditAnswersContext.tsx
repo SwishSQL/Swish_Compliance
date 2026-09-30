@@ -13,23 +13,35 @@ import { saveResponsesBulkAction } from "./actions";
 
 export type AnswerValue = "pass" | "fail" | "na";
 
-type AnswerState = { response: AnswerValue | null; notes: string };
+type AnswerState = {
+  response: AnswerValue | null;
+  /** How the sampled interactions broke down (migration 054). Must sum to
+   *  100 together before the row is savable. Null = not yet touched. */
+  yesPercent: number | null;
+  noPercent: number | null;
+  naPercent: number | null;
+  notes: string;
+};
 
 type AuditAnswersContextValue = {
   auditId: number;
   canEdit: boolean;
   get: (itemId: number) => AnswerState;
   setResponse: (itemId: number, response: AnswerValue) => void;
+  setSplit: (itemId: number, field: "yes" | "no" | "na", value: number | null) => void;
   setNotes: (itemId: number, notes: string) => void;
   /** Item ids whose answer differs from what's stored on the server. */
   dirtyIds: number[];
+  /** Dirty items whose Yes+No+N-A doesn't add up to 100 — not savable yet. */
+  invalidIds: number[];
   answeredCount: number;
   totalCount: number;
   saving: boolean;
   error: string | null;
   savedAt: number | null;
   /** Persists every dirty answer. Returns true when nothing is left unsaved
-   *  — Submit uses that to decide whether it's safe to continue. */
+   *  — Submit uses that to decide whether it's safe to continue. Refuses
+   *  outright (no partial save) when any dirty row doesn't sum to 100. */
   saveAll: () => Promise<boolean>;
 };
 
@@ -41,6 +53,25 @@ export function useAuditAnswers(): AuditAnswersContextValue {
     throw new Error("useAuditAnswers must be used inside <AuditAnswersProvider>");
   }
   return ctx;
+}
+
+const EMPTY_SPLIT = { yesPercent: null, noPercent: null, naPercent: null } as const;
+
+/** The clean, no-nuance split a freshly-picked verdict starts at — the
+ *  radio buttons are a shortcut for this common case; the three boxes are
+ *  what the auditor actually fine-tunes for a partial-N-A sample. */
+function defaultSplitFor(
+  response: AnswerValue
+): Pick<AnswerState, "yesPercent" | "noPercent" | "naPercent"> {
+  return {
+    yesPercent: response === "pass" ? 100 : 0,
+    noPercent: response === "fail" ? 100 : 0,
+    naPercent: response === "na" ? 100 : 0,
+  };
+}
+
+function splitSum(a: AnswerState): number {
+  return (a.yesPercent ?? 0) + (a.noPercent ?? 0) + (a.naPercent ?? 0);
 }
 
 /**
@@ -62,15 +93,26 @@ export function AuditAnswersProvider({
   auditId: number;
   canEdit: boolean;
   /** One entry per distinct checklist item in the audit's scope. */
-  initial: { itemId: number; response: AnswerValue | null; notes: string | null }[];
+  initial: {
+    itemId: number;
+    response: AnswerValue | null;
+    yesPercent: number | null;
+    noPercent: number | null;
+    naPercent: number | null;
+    notes: string | null;
+  }[];
   children: ReactNode;
 }) {
-  const buildMap = (
-    src: { itemId: number; response: AnswerValue | null; notes: string | null }[]
-  ) => {
+  const buildMap = (src: typeof initial) => {
     const m = new Map<number, AnswerState>();
     for (const r of src) {
-      m.set(r.itemId, { response: r.response, notes: r.notes ?? "" });
+      m.set(r.itemId, {
+        response: r.response,
+        yesPercent: r.yesPercent,
+        noPercent: r.noPercent,
+        naPercent: r.naPercent,
+        notes: r.notes ?? "",
+      });
     }
     return m;
   };
@@ -84,7 +126,10 @@ export function AuditAnswersProvider({
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saving, startSaving] = useTransition();
 
-  const EMPTY: AnswerState = useMemo(() => ({ response: null, notes: "" }), []);
+  const EMPTY: AnswerState = useMemo(
+    () => ({ response: null, ...EMPTY_SPLIT, notes: "" }),
+    []
+  );
 
   const get = useCallback(
     (itemId: number) => answers.get(itemId) ?? EMPTY,
@@ -93,18 +138,41 @@ export function AuditAnswersProvider({
 
   const setResponse = useCallback((itemId: number, response: AnswerValue) => {
     setAnswers((prev) => {
+      const cur = prev.get(itemId) ?? { response: null, ...EMPTY_SPLIT, notes: "" };
+      // Re-clicking the current verdict must not wipe a split the auditor
+      // already fine-tuned; picking a different one resets to its clean
+      // 100/0/0 default, which is then free to be broken down further.
+      if (cur.response === response) return prev;
       const next = new Map(prev);
-      const cur = next.get(itemId) ?? { response: null, notes: "" };
-      next.set(itemId, { ...cur, response });
+      next.set(itemId, { ...cur, response, ...defaultSplitFor(response) });
       return next;
     });
     setError(null);
   }, []);
 
+  const setSplit = useCallback(
+    (itemId: number, field: "yes" | "no" | "na", value: number | null) => {
+      setAnswers((prev) => {
+        const next = new Map(prev);
+        const cur = next.get(itemId) ?? { response: null, ...EMPTY_SPLIT, notes: "" };
+        const clamped =
+          value === null || Number.isNaN(value)
+            ? null
+            : Math.max(0, Math.min(100, Math.round(value)));
+        const key =
+          field === "yes" ? "yesPercent" : field === "no" ? "noPercent" : "naPercent";
+        next.set(itemId, { ...cur, [key]: clamped });
+        return next;
+      });
+      setError(null);
+    },
+    []
+  );
+
   const setNotes = useCallback((itemId: number, notes: string) => {
     setAnswers((prev) => {
       const next = new Map(prev);
-      const cur = next.get(itemId) ?? { response: null, notes: "" };
+      const cur = next.get(itemId) ?? { response: null, ...EMPTY_SPLIT, notes: "" };
       next.set(itemId, { ...cur, notes });
       return next;
     });
@@ -118,12 +186,24 @@ export function AuditAnswersProvider({
       // is what scoring reads, so a note alone would be a silent no-op.
       if (!cur.response) continue;
       const was = saved.get(itemId);
-      if (!was || was.response !== cur.response || (was.notes ?? "") !== cur.notes) {
+      if (
+        !was ||
+        was.response !== cur.response ||
+        was.yesPercent !== cur.yesPercent ||
+        was.noPercent !== cur.noPercent ||
+        was.naPercent !== cur.naPercent ||
+        (was.notes ?? "") !== cur.notes
+      ) {
         out.push(itemId);
       }
     }
     return out;
   }, [answers, saved]);
+
+  const invalidIds = useMemo(
+    () => dirtyIds.filter((itemId) => splitSum(answers.get(itemId)!) !== 100),
+    [dirtyIds, answers]
+  );
 
   const answeredCount = useMemo(
     () => [...answers.values()].filter((a) => a.response).length,
@@ -132,9 +212,25 @@ export function AuditAnswersProvider({
 
   const saveAll = useCallback(async () => {
     if (!canEdit || dirtyIds.length === 0) return true;
+    if (invalidIds.length > 0) {
+      setError(
+        `${invalidIds.length} question${invalidIds.length === 1 ? "" : "s"} ` +
+          `have a Yes/No/N-A split that doesn't add up to 100% — fix ${
+            invalidIds.length === 1 ? "it" : "them"
+          } before saving.`
+      );
+      return false;
+    }
     const payload = dirtyIds.map((itemId) => {
       const a = answers.get(itemId)!;
-      return { itemId, response: a.response as AnswerValue, notes: a.notes };
+      return {
+        itemId,
+        response: a.response as AnswerValue,
+        yesPercent: a.yesPercent ?? 0,
+        noPercent: a.noPercent ?? 0,
+        naPercent: a.naPercent ?? 0,
+        notes: a.notes,
+      };
     });
 
     return new Promise<boolean>((resolve) => {
@@ -150,7 +246,13 @@ export function AuditAnswersProvider({
         setSaved((prev) => {
           const next = new Map(prev);
           for (const p of payload) {
-            next.set(p.itemId, { response: p.response, notes: p.notes });
+            next.set(p.itemId, {
+              response: p.response,
+              yesPercent: p.yesPercent,
+              noPercent: p.noPercent,
+              naPercent: p.naPercent,
+              notes: p.notes,
+            });
           }
           return next;
         });
@@ -159,15 +261,17 @@ export function AuditAnswersProvider({
         resolve(true);
       });
     });
-  }, [auditId, canEdit, dirtyIds, answers]);
+  }, [auditId, canEdit, dirtyIds, invalidIds, answers]);
 
   const value: AuditAnswersContextValue = {
     auditId,
     canEdit,
     get,
     setResponse,
+    setSplit,
     setNotes,
     dirtyIds,
+    invalidIds,
     answeredCount,
     totalCount: initial.length,
     saving,

@@ -171,6 +171,20 @@ const sectionField = z
   .optional()
   .nullable();
 
+
+/** Pull every selected department out of the multi-select, which posts
+ *  one repeated "department_ids" entry per chosen department. */
+function selectedDepartmentIds(formData: FormData): number[] {
+  const out: number[] = [];
+  for (const v of formData.getAll("department_ids")) {
+    if (typeof v === "string" && v !== "") {
+      const n = Number(v);
+      if (Number.isInteger(n) && n > 0) out.push(n);
+    }
+  }
+  return Array.from(new Set(out));
+}
+
 const CreateSchema = z.object({
   code: z.string().trim().optional().nullable(),
   title: z.string().trim().min(1, "Title is required"),
@@ -261,6 +275,7 @@ export async function createSopAction(formData: FormData) {
     attachment_mime: file?.mime ?? null,
     brand_is_function: brandIsFunction,
     is_all_departments: isAllDepartments,
+    department_ids: selectedDepartmentIds(formData),
     created_by: user.id,
   });
 
@@ -419,6 +434,7 @@ export async function updateSopAction(formData: FormData) {
     attachment_mime: file?.mime ?? null,
     brand_id: parsed.brand_id ?? null,
     department_id: parsed.department_id ?? null,
+    department_ids: selectedDepartmentIds(formData),
     effective_date: parsed.effective_date ?? null,
     review_date: parsed.review_date ?? null,
     brand_is_function: brandIsFunction,

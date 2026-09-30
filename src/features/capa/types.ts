@@ -82,6 +82,12 @@ export type CapaAuditorContext = {
   test_name: string | null;
   question: string;
   auditor_response: string | null;
+  yes_percent: number | null;
+  no_percent: number | null;
+  na_percent: number | null;
+  /** Yes's share of the applicable samples, 0-100. Null when there's no
+   *  linked response, or the question was 100% N-A (migration 054). */
+  performance_percent: number | null;
   auditor_note: string | null;
   auditor_evidence_url: string | null;
   auditor_evidence_name: string | null;
@@ -116,6 +122,14 @@ export type AuditFinding = {
   item_code: string | null;
   question: string;
   is_critical: boolean;
+  /** How the sampled interactions broke down (migration 054). Sum to 100. */
+  yes_percent: number;
+  no_percent: number;
+  na_percent: number;
+  /** Yes's share of the applicable (Yes+No) samples — below-threshold is
+   *  why this finding exists at all. Always defined here: a finding is by
+   *  definition an applicable, answered question. */
+  performance_percent: number;
   auditor_note: string | null;
   evidence_url: string | null;
   evidence_name: string | null;

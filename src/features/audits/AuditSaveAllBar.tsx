@@ -11,6 +11,7 @@ export default function AuditSaveAllBar() {
   const {
     canEdit,
     dirtyIds,
+    invalidIds,
     answeredCount,
     totalCount,
     saving,
@@ -22,6 +23,7 @@ export default function AuditSaveAllBar() {
   if (!canEdit) return null;
 
   const unsaved = dirtyIds.length;
+  const hasInvalid = invalidIds.length > 0;
 
   return (
     <div
@@ -44,6 +46,13 @@ export default function AuditSaveAllBar() {
         )}
       </div>
 
+      {!error && hasInvalid && (
+        <span className="text-xs text-red-600">
+          {invalidIds.length} question{invalidIds.length === 1 ? "" : "s"} don&apos;t
+          add up to 100% — fix the highlighted total before saving.
+        </span>
+      )}
+
       {error && <span className="text-xs text-red-600">{error}</span>}
 
       {!error && savedAt && unsaved === 0 && (
@@ -53,7 +62,7 @@ export default function AuditSaveAllBar() {
       <button
         type="button"
         onClick={() => void saveAll()}
-        disabled={saving || unsaved === 0}
+        disabled={saving || unsaved === 0 || hasInvalid}
         className="ml-auto bg-brand-700 hover:bg-brand-800 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-5 py-2 rounded-lg text-sm font-medium"
       >
         {saving
