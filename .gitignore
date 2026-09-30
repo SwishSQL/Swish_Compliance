@@ -19,5 +19,4 @@ next-env.d.ts
 # Local-only Claude preview helpers (NOT shipped to Railway)
 .claude/
 start-dev.cjs
-package-lock.json
 scripts/wipe_data_*.mjs
