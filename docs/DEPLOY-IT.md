@@ -43,7 +43,7 @@ npm ci
 npm run db:check        # every line should be ✓
 npm run db:migrate      # creates tables, triggers, seed data, first admin
 npm run build
-npx next start -p <port>          # or: npm start (port 3001)
+npm start                          # listens on port 6011 (change it in package.json to use another)
 ```
 
 Run it as a service (PM2, NSSM, Windows Service, systemd) behind the HTTPS

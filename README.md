@@ -24,7 +24,7 @@ npm install
 cp .env.example .env.local      # set DATABASE_URL and JWT_SECRET
 npm run db:check                # connects and exercises the data layer
 npm run db:migrate              # creates the schema + seed data + first admin
-npm run build && npm start      # http://localhost:3001
+npm run build && npm start      # http://localhost:6011
 ```
 
 `npm run dev` runs the development server instead of the production build.
