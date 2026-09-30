@@ -15,25 +15,25 @@
     "db:migrate": "node scripts/migrate.mjs"
   },
   "dependencies": {
-    "bcryptjs": "^3.0.3",
-    "jose": "^5.10.0",
-    "mssql": "^11.0.1",
-    "next": "^15.2.4",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "xlsx": "^0.18.5",
-    "zod": "^3.24.1"
-  },
-  "devDependencies": {
     "@tailwindcss/postcss": "^4.0.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/mssql": "^9.1.5",
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
-    "eslint": "^9.17.0",
-    "eslint-config-next": "^15.2.4",
+    "bcryptjs": "^3.0.3",
+    "jose": "^5.10.0",
+    "mssql": "^11.0.1",
+    "next": "^15.2.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "tailwindcss": "^4.0.0",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "xlsx": "^0.18.5",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "eslint": "^9.17.0",
+    "eslint-config-next": "^15.2.4"
   }
 }
