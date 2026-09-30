@@ -6,12 +6,12 @@ const DOMAIN_SELECT = `
   d.id, d.code, d.name, d.description, d.sort_order,
   d.is_active, d.created_at, d.updated_at,
   d.review_scope_method, d.evidence_to_obtain, d.review_focus, d.how_to_verify,
-  (SELECT COUNT(*)::int FROM frameworks f WHERE f.domain_id = d.id) AS framework_count
+  (SELECT COUNT(*) FROM frameworks f WHERE f.domain_id = d.id) AS framework_count
 FROM domains d
 `;
 
 export async function listDomains(includeInactive = false): Promise<Domain[]> {
-  const where = includeInactive ? "" : "WHERE d.is_active";
+  const where = includeInactive ? "" : "WHERE d.is_active = 1";
   return queryAll<Domain>(
     `SELECT ${DOMAIN_SELECT} ${where} ORDER BY d.sort_order, d.name`
   );
@@ -36,8 +36,8 @@ export async function createDomain(input: {
 }): Promise<number> {
   const row = await queryOne<{ id: number }>(
     `INSERT INTO domains (code, name, description, sort_order, sop_id, department_id, is_active)
-     VALUES ($1, $2, $3, COALESCE($4, 0), $5, $6, TRUE)
-     RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, COALESCE(CAST($4 AS INT), 0), $5, $6, 1)`,
     [
       input.code,
       input.name,
@@ -109,7 +109,7 @@ export async function listSopsByDomain(): Promise<Map<number, DomainSopRow[]>> {
      FROM sops s
      LEFT JOIN departments d ON d.id = s.department_id
      WHERE s.home_domain_id IS NOT NULL
-     ORDER BY s.code NULLS LAST, s.title`
+     ORDER BY CASE WHEN s.code IS NULL THEN 1 ELSE 0 END, s.code, s.title`
   );
   const map = new Map<number, DomainSopRow[]>();
   for (const r of rows) {

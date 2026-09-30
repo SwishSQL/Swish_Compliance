@@ -37,7 +37,7 @@ async function resolveAudience(audience: Audience): Promise<number[]> {
   if (audience.roles && audience.roles.length > 0) {
     const rows = await queryAll<{ id: number }>(
       `SELECT id FROM users
-       WHERE is_active = TRUE AND role = ANY($1::text[])`,
+       WHERE is_active = 1 AND role = ANY($1::text[])`,
       [audience.roles]
     );
     rows.forEach((r) => set.add(r.id));
@@ -73,16 +73,17 @@ export async function notify(input: NotifyInput): Promise<void> {
 
     const severity = input.severity ?? "info";
 
-    // Bulk insert via a single query with one row per recipient.
-    const values: string[] = [];
-    const params: unknown[] = [];
-    let i = 1;
-    for (const uid of recipients) {
-      values.push(
-        `($${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++})`
-      );
-      params.push(
-        uid,
+    // Bulk insert via a single query with one row per recipient. The
+    // recipient ids travel as one JSON param so a large audience can't hit
+    // SQL Server's 2,100-parameter / 1,000-row VALUES limits.
+    await execute(
+      `INSERT INTO notifications
+        (user_id, actor_id, actor_name, actor_role, kind, title, body, severity,
+         entity_type, entity_id, href)
+       SELECT CAST(r.value AS INT), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+       FROM OPENJSON($1) r`,
+      [
+        JSON.stringify(recipients),
         input.actor.id,
         input.actor.name,
         input.actor.role,
@@ -92,16 +93,8 @@ export async function notify(input: NotifyInput): Promise<void> {
         severity,
         input.entity?.type ?? null,
         input.entity?.id ?? null,
-        input.entity?.href ?? null
-      );
-    }
-
-    await execute(
-      `INSERT INTO notifications
-        (user_id, actor_id, actor_name, actor_role, kind, title, body, severity,
-         entity_type, entity_id, href)
-       VALUES ${values.join(", ")}`,
-      params
+        input.entity?.href ?? null,
+      ]
     );
   } catch (err) {
     // Don't let notification errors bubble up into the main action.

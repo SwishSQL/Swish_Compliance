@@ -66,71 +66,77 @@ export default async function ReportsPage() {
   /* ── Headline counts ──────────────────────────────────────────── */
   const overview = await queryOne<Overview>(
     `SELECT
-       (SELECT COUNT(*)::int FROM sops)                                              AS total_sops,
-       (SELECT COUNT(*)::int FROM sops WHERE status = 'approved')                    AS approved_sops,
-       (SELECT COUNT(*)::int FROM sops
+       (SELECT COUNT(*) FROM sops)                                                   AS total_sops,
+       (SELECT COUNT(*) FROM sops WHERE status = 'approved')                         AS approved_sops,
+       (SELECT COUNT(*) FROM sops
          WHERE status IN ('pending_compliance','pending_business_excellence','pending_ceo',
                           'returned_to_dm','returned_to_compliance','returned_to_be')) AS pending_sops,
 
-       (SELECT COUNT(*)::int FROM audits WHERE status IN ('submitted','closed'))     AS total_audits,
-       (SELECT COUNT(*)::int FROM audits
+       (SELECT COUNT(*) FROM audits WHERE status IN ('submitted','closed'))          AS total_audits,
+       (SELECT COUNT(*) FROM audits
          WHERE status IN ('submitted','closed')
-           AND submitted_at >= NOW() - INTERVAL '7 days')                            AS audits_this_week,
-       (SELECT COUNT(*)::int FROM audits
+           AND submitted_at >= DATEADD(day, -7, SYSUTCDATETIME()))                   AS audits_this_week,
+       (SELECT COUNT(*) FROM audits
          WHERE status IN ('submitted','closed')
-           AND submitted_at >= NOW() - INTERVAL '14 days'
-           AND submitted_at <  NOW() - INTERVAL '7 days')                            AS audits_last_week,
-       (SELECT ROUND(AVG(score)::numeric, 1)::text FROM audits WHERE score IS NOT NULL) AS avg_score,
-       (SELECT ROUND(AVG(score)::numeric, 1)::text FROM audits
-         WHERE score IS NOT NULL AND submitted_at >= NOW() - INTERVAL '30 days')     AS avg_score_last_30,
+           AND submitted_at >= DATEADD(day, -14, SYSUTCDATETIME())
+           AND submitted_at <  DATEADD(day, -7, SYSUTCDATETIME()))                   AS audits_last_week,
+       (SELECT CAST(CAST(ROUND(AVG(CAST(score AS DECIMAL(18,4))), 1) AS DECIMAL(18,1)) AS NVARCHAR(40))
+          FROM audits WHERE score IS NOT NULL)                                       AS avg_score,
+       (SELECT CAST(CAST(ROUND(AVG(CAST(score AS DECIMAL(18,4))), 1) AS DECIMAL(18,1)) AS NVARCHAR(40))
+          FROM audits
+         WHERE score IS NOT NULL AND submitted_at >= DATEADD(day, -30, SYSUTCDATETIME())) AS avg_score_last_30,
 
-       (SELECT COUNT(*)::int FROM corrective_actions)                                AS total_capas,
-       (SELECT COUNT(*)::int FROM corrective_actions
+       (SELECT COUNT(*) FROM corrective_actions)                                     AS total_capas,
+       (SELECT COUNT(*) FROM corrective_actions
          WHERE status IN ('open','in_progress','submitted'))                         AS open_capas,
-       (SELECT COUNT(*)::int FROM corrective_actions WHERE status = 'closed')        AS closed_capas,
-       (SELECT COUNT(*)::int FROM corrective_actions
-         WHERE due_date < CURRENT_DATE
+       (SELECT COUNT(*) FROM corrective_actions WHERE status = 'closed')             AS closed_capas,
+       (SELECT COUNT(*) FROM corrective_actions
+         WHERE due_date < CAST(SYSUTCDATETIME() AS DATE)
            AND status IN ('open','in_progress','submitted'))                         AS overdue_capas,
-       (SELECT COUNT(*)::int FROM corrective_actions
-         WHERE created_at >= NOW() - INTERVAL '7 days')                              AS capas_this_week,
+       (SELECT COUNT(*) FROM corrective_actions
+         WHERE created_at >= DATEADD(day, -7, SYSUTCDATETIME()))                     AS capas_this_week,
 
-       (SELECT COUNT(*)::int FROM checks WHERE is_active)                            AS total_checks,
-       (SELECT COUNT(*)::int FROM checks WHERE last_status = 'failing')              AS failing_checks,
-       (SELECT COUNT(*)::int FROM checks WHERE last_status = 'passing')              AS passing_checks,
+       (SELECT COUNT(*) FROM checks WHERE is_active = 1)                             AS total_checks,
+       (SELECT COUNT(*) FROM checks WHERE last_status = 'failing')                   AS failing_checks,
+       (SELECT COUNT(*) FROM checks WHERE last_status = 'passing')                   AS passing_checks,
 
-       (SELECT COUNT(*)::int FROM controls WHERE is_active)                          AS total_controls,
-       (SELECT COUNT(*)::int FROM controls WHERE health_status = 'healthy')          AS healthy_controls,
-       (SELECT COUNT(*)::int FROM controls WHERE health_status = 'failing')          AS failing_controls,
+       (SELECT COUNT(*) FROM controls WHERE is_active = 1)                           AS total_controls,
+       (SELECT COUNT(*) FROM controls WHERE health_status = 'healthy')               AS healthy_controls,
+       (SELECT COUNT(*) FROM controls WHERE health_status = 'failing')               AS failing_controls,
 
-       (SELECT COUNT(*)::int FROM frameworks)                                        AS total_frameworks,
-       (SELECT COUNT(*)::int FROM frameworks WHERE is_active)                        AS active_frameworks,
+       (SELECT COUNT(*) FROM frameworks)                                             AS total_frameworks,
+       (SELECT COUNT(*) FROM frameworks WHERE is_active = 1)                         AS active_frameworks,
 
-       (SELECT COUNT(*)::int FROM checklist_templates WHERE is_active)               AS total_checklists,
-       (SELECT COUNT(*)::int FROM users WHERE is_active)                             AS total_users`
+       (SELECT COUNT(*) FROM checklist_templates WHERE is_active = 1)                AS total_checklists,
+       (SELECT COUNT(*) FROM users WHERE is_active = 1)                              AS total_users`
   );
 
   /* ── 30-day audit activity (one row per day, padded with zeros) ── */
   const dailyAudits = await queryAll<DailyAudit>(
-    `SELECT
-       to_char(d::date, 'YYYY-MM-DD')                                    AS day,
-       COALESCE(COUNT(a.id), 0)::int                                     AS audits,
-       COALESCE(ROUND(AVG(a.score)::numeric, 1)::text, '0')              AS avg_score
-     FROM generate_series(
-       CURRENT_DATE - INTERVAL '29 days',
-       CURRENT_DATE,
-       INTERVAL '1 day'
-     ) d
+    `WITH days AS (
+       SELECT 29 AS n, DATEADD(day, -29, CAST(SYSUTCDATETIME() AS DATE)) AS d
+       UNION ALL
+       SELECT n - 1, DATEADD(day, 1, d) FROM days WHERE n > 0
+     )
+     SELECT
+       CONVERT(NVARCHAR(10), d.d, 23)                                    AS day,
+       COUNT(a.id)                                                       AS audits,
+       COALESCE(CAST(CAST(ROUND(AVG(CAST(a.score AS DECIMAL(18,4))), 1) AS DECIMAL(18,1)) AS NVARCHAR(40)), '0') AS avg_score
+     FROM days d
      LEFT JOIN audits a
-       ON a.submitted_at::date = d::date
+       ON CAST(a.submitted_at AS DATE) = d.d
       AND a.status IN ('submitted','closed')
       AND a.score IS NOT NULL
-     GROUP BY d
-     ORDER BY d ASC`
+     GROUP BY d.d
+     ORDER BY d.d ASC`
   );
 
   /* ── SOP status breakdown ─────────────────────────────────────── */
-  const sopByStatus = await queryAll<StatusBreakdown>(
+  // INITCAP has no T-SQL equivalent: unmapped statuses come back with a
+  // NULL label and are title-cased in JS (see initcap below).
+  const sopByStatus = (await queryAll<StatusBreakdown & { status: string }>(
     `SELECT
+       status,
        CASE status
          WHEN 'draft'                       THEN 'Draft'
          WHEN 'pending_compliance'          THEN 'Pending Compliance'
@@ -141,17 +147,16 @@ export default async function ReportsPage() {
          WHEN 'returned_to_be'              THEN 'Returned → BE'
          WHEN 'approved'                    THEN 'Approved'
          WHEN 'archived'                    THEN 'Archived'
-         ELSE INITCAP(REPLACE(status, '_', ' '))
        END AS label,
-       COUNT(*)::int AS n
+       COUNT(*) AS n
      FROM sops
      GROUP BY status
      ORDER BY n DESC`
-  );
+  )).map((r) => ({ label: r.label ?? initcap(r.status.replace(/_/g, " ")), n: r.n }));
 
   /* ── CAPA by severity (open only) ─────────────────────────────── */
-  const capaBySeverity = await queryAll<StatusBreakdown>(
-    `SELECT INITCAP(severity) AS label, COUNT(*)::int AS n
+  const capaBySeverity = (await queryAll<{ severity: string; n: number }>(
+    `SELECT severity, COUNT(*) AS n
      FROM corrective_actions
      WHERE status NOT IN ('closed','rejected')
      GROUP BY severity
@@ -163,26 +168,26 @@ export default async function ReportsPage() {
          WHEN 'low' THEN 4
          ELSE 5
        END`
-  );
+  )).map((r) => ({ label: initcap(r.severity), n: r.n }));
 
   /* ── CAPA by status (all) ─────────────────────────────────────── */
-  const capaByStatus = await queryAll<StatusBreakdown>(
-    `SELECT INITCAP(REPLACE(status,'_',' ')) AS label, COUNT(*)::int AS n
+  const capaByStatus = (await queryAll<{ status: string; n: number }>(
+    `SELECT status, COUNT(*) AS n
      FROM corrective_actions GROUP BY status ORDER BY n DESC`
-  );
+  )).map((r) => ({ label: initcap(r.status.replace(/_/g, " ")), n: r.n }));
 
   /* ── Audit score per brand ────────────────────────────────────── */
   const byBrand = await queryAll<BrandRow>(
     `SELECT
        b.name AS brand_name,
-       COUNT(a.*)::int                              AS audits,
-       ROUND(AVG(a.score)::numeric, 1)::text        AS avg_score,
-       COALESCE(SUM(a.critical_failed),0)::int      AS critical
+       COUNT(*)                                     AS audits,
+       CAST(CAST(ROUND(AVG(CAST(a.score AS DECIMAL(18,4))), 1) AS DECIMAL(18,1)) AS NVARCHAR(40)) AS avg_score,
+       COALESCE(SUM(a.critical_failed),0)           AS critical
      FROM audits a
      LEFT JOIN brands b ON b.id = a.brand_id
      WHERE a.status IN ('submitted','closed') AND a.score IS NOT NULL
      GROUP BY b.name
-     ORDER BY AVG(a.score) DESC NULLS LAST`
+     ORDER BY AVG(CAST(a.score AS DECIMAL(18,4))) DESC`
   );
 
   const topBrands = byBrand.slice(0, 5);
@@ -190,47 +195,43 @@ export default async function ReportsPage() {
 
   /* ── Top controls needing attention ───────────────────────────── */
   const topFailingControls = await queryAll<ControlRisk>(
-    `SELECT c.id, c.name, c.code, c.health_status,
-       (SELECT COUNT(*)::int FROM corrective_actions ca
+    `SELECT TOP (8) c.id, c.name, c.code, c.health_status,
+       (SELECT COUNT(*) FROM corrective_actions ca
         JOIN control_links cl ON cl.entity_type = 'capa' AND cl.entity_id = ca.id
         WHERE cl.control_id = c.id AND ca.status IN ('open','in_progress','submitted')) AS open_capas
      FROM controls c
-     WHERE c.is_active AND c.health_status IN ('failing','at_risk')
-     ORDER BY c.health_status = 'failing' DESC, open_capas DESC
-     LIMIT 8`
+     WHERE c.is_active = 1 AND c.health_status IN ('failing','at_risk')
+     ORDER BY CASE WHEN c.health_status = 'failing' THEN 1 ELSE 0 END DESC, open_capas DESC`
   );
 
   /* ── Recent activity (audit_logs) ─────────────────────────────── */
   const activity = await queryAll<ActivityRow>(
-    `SELECT al.action, al.entity, al.entity_id,
+    `SELECT TOP (12) al.action, al.entity, al.entity_id,
             COALESCE(u.display_name, al.user_email, 'System') AS user_name,
             al.created_at
      FROM audit_logs al
      LEFT JOIN users u ON u.id = al.user_id
-     ORDER BY al.created_at DESC
-     LIMIT 12`
+     ORDER BY al.created_at DESC`
   );
 
   /* ── Framework coverage ───────────────────────────────────────── */
   const frameworks = await queryAll<FrameworkRow>(
-    `SELECT f.id, f.name, f.category, f.is_active,
-       COALESCE(COUNT(c.id), 0)::int                                                AS total_controls,
-       COALESCE(SUM(CASE WHEN c.health_status = 'healthy' THEN 1 ELSE 0 END), 0)::int AS healthy_controls
+    `SELECT TOP (8) f.id, f.name, f.category, f.is_active,
+       COUNT(c.id)                                                               AS total_controls,
+       COALESCE(SUM(CASE WHEN c.health_status = 'healthy' THEN 1 ELSE 0 END), 0) AS healthy_controls
      FROM frameworks f
-     LEFT JOIN controls c ON c.framework_id = f.id AND c.is_active
-     GROUP BY f.id
-     ORDER BY f.is_active DESC, total_controls DESC, f.name
-     LIMIT 8`
+     LEFT JOIN controls c ON c.framework_id = f.id AND c.is_active = 1
+     GROUP BY f.id, f.name, f.category, f.is_active
+     ORDER BY f.is_active DESC, total_controls DESC, f.name`
   );
 
   /* ── Checklist usage (by audit count) ─────────────────────────── */
   const checklistUsage = await queryAll<ChecklistUsage>(
-    `SELECT t.id, t.name, t.category,
-       (SELECT COUNT(*)::int FROM audits a WHERE a.template_id = t.id) AS audit_count
+    `SELECT TOP (6) t.id, t.name, t.category,
+       (SELECT COUNT(*) FROM audits a WHERE a.template_id = t.id) AS audit_count
      FROM checklist_templates t
-     WHERE t.is_active
-     ORDER BY audit_count DESC, t.name ASC
-     LIMIT 6`
+     WHERE t.is_active = 1
+     ORDER BY audit_count DESC, t.name ASC`
   );
 
   /* ── Computed composites ──────────────────────────────────────── */
@@ -653,6 +654,14 @@ export default async function ReportsPage() {
 function pct(num: number | undefined | null, den: number | undefined | null): number {
   if (!num || !den || den === 0) return 0;
   return Math.round((num / den) * 100);
+}
+
+// PostgreSQL INITCAP: first letter of each alphanumeric run upper-cased,
+// the rest lower-cased.
+function initcap(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/(^|[^a-z0-9])([a-z])/g, (_m, sep: string, c: string) => sep + c.toUpperCase());
 }
 
 function timeAgo(iso: string): string {

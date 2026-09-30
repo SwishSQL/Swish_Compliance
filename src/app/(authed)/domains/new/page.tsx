@@ -11,10 +11,10 @@ export default async function NewDomainPage() {
 
   const [sops, departments] = await Promise.all([
     queryAll<{ id: number; code: string | null; title: string }>(
-      `SELECT id, code, title FROM sops WHERE status = 'approved' ORDER BY code NULLS LAST, title`
+      `SELECT id, code, title FROM sops WHERE status = 'approved' ORDER BY CASE WHEN code IS NULL THEN 1 ELSE 0 END, code, title`
     ),
     queryAll<{ id: number; name: string }>(
-      `SELECT id, name FROM departments WHERE is_active ORDER BY name`
+      `SELECT id, name FROM departments WHERE is_active = 1 ORDER BY name`
     ),
   ]);
 

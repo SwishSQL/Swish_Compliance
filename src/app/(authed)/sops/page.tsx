@@ -40,7 +40,7 @@ export default async function SopsPage({
   const isAdmin = user.role === "admin";
   const seededSop = isAdmin
     ? await queryOne<{ id: number }>(
-        `SELECT id FROM sops WHERE code = 'HRD-REC-01' LIMIT 1`
+        `SELECT TOP (1) id FROM sops WHERE code = 'HRD-REC-01'`
       )
     : null;
   const showImportButton = isAdmin && !seededSop;

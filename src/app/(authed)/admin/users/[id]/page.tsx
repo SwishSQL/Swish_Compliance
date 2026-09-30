@@ -21,7 +21,7 @@ export default async function EditUserPage({
   if (!u) notFound();
 
   const departments = await queryAll<{ id: number; name: string }>(
-    `SELECT id, name FROM departments WHERE is_active OR id = ANY($1) ORDER BY name`,
+    `SELECT id, name FROM departments WHERE is_active = 1 OR id = ANY($1) ORDER BY name`,
     [u.department_ids]
   );
 

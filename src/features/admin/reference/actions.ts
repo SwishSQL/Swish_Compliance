@@ -49,7 +49,8 @@ function makeActions(table: Table, revalidatePathStr: string) {
       const admin = await requireAdmin();
       const parsed = NameSchema.parse(Object.fromEntries(formData.entries()));
       const result = await execute(
-        `INSERT INTO ${table} (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`,
+        `INSERT INTO ${table} (name)
+         SELECT $1 WHERE NOT EXISTS (SELECT 1 FROM ${table} WHERE name = $1)`,
         [parsed.name]
       );
       if (result === 0) {

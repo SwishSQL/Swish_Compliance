@@ -34,13 +34,13 @@ export default async function DepartmentsTabContent() {
      LEFT JOIN divisions dv ON dv.id = d.division_id
      LEFT JOIN departments pd ON pd.id = d.parent_department_id
      LEFT JOIN users mu ON mu.id = d.manager_id
-     ORDER BY dv.sort_order NULLS LAST, d.name`
+     ORDER BY CASE WHEN dv.sort_order IS NULL THEN 1 ELSE 0 END, dv.sort_order, d.name`
   );
   // Staff mapped to each department (from the user_departments junction).
   const staff = await queryAll<Staff>(
     `SELECT ud.department_id, u.id, u.display_name, u.role
      FROM user_departments ud JOIN users u ON u.id = ud.user_id
-     WHERE u.is_active
+     WHERE u.is_active = 1
      ORDER BY u.display_name`
   );
   const staffByDept = new Map<number, Staff[]>();
@@ -53,8 +53,8 @@ export default async function DepartmentsTabContent() {
   // user can be picked (some departments are represented by a compliance
   // or BE lead instead).
   const allUsers = await queryAll<{ id: number; display_name: string; role: string }>(
-    `SELECT id, display_name, role FROM users WHERE is_active ORDER BY
-       (role = 'department_manager') DESC, display_name`
+    `SELECT id, display_name, role FROM users WHERE is_active = 1 ORDER BY
+       CASE WHEN role = 'department_manager' THEN 1 ELSE 0 END DESC, display_name`
   );
 
   return (

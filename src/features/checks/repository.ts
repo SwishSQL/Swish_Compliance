@@ -18,7 +18,7 @@ const CHECK_SELECT = `
   ch.procedure_steps, ch.evidence_needed, ch.method,
   ch.performer_role, ch.reviewer_role,
   ch.pass_criteria, ch.fail_criteria, ch.frequency_label, ch.evidence_code,
-  (SELECT COUNT(*)::int FROM check_results r WHERE r.check_id = ch.id) AS result_count
+  (SELECT COUNT(*) FROM check_results r WHERE r.check_id = ch.id) AS result_count
 FROM checks ch
 LEFT JOIN controls            c ON c.id = ch.control_id
 LEFT JOIN users               u ON u.id = ch.owner_user_id
@@ -45,7 +45,7 @@ export async function listChecks(filters: {
      ${where}
      ORDER BY
        CASE ch.last_status WHEN 'failing' THEN 0 WHEN 'pending_review' THEN 1 WHEN 'accepted_risk' THEN 2 WHEN 'passing' THEN 3 ELSE 4 END,
-       ch.next_due_date NULLS LAST, ch.name`,
+       CASE WHEN ch.next_due_date IS NULL THEN 1 ELSE 0 END, ch.next_due_date, ch.name`,
     params
   );
 }
@@ -78,14 +78,14 @@ export async function listLinkedChecklistItems(
      JOIN checklist_items     ci ON ci.id = cci.checklist_item_id
      JOIN checklist_templates t  ON t.id  = ci.template_id
      WHERE cci.check_id = $1
-     ORDER BY t.name, ci.section NULLS LAST, ci.sort_order, ci.id`,
+     ORDER BY t.name, CASE WHEN ci.section IS NULL THEN 1 ELSE 0 END, ci.section, ci.sort_order, ci.id`,
     [checkId]
   );
 }
 
 export async function listCheckResults(checkId: number, limit = 25): Promise<CheckResult[]> {
   return queryAll<CheckResult>(
-    `SELECT r.id, r.check_id, r.status, r.notes,
+    `SELECT TOP ($2) r.id, r.check_id, r.status, r.notes,
             r.evidence_url, r.evidence_name, r.evidence_mime,
             r.performed_by, u.display_name AS performed_by_name,
             r.checklist_template_id, t.name AS checklist_template_name,
@@ -94,8 +94,7 @@ export async function listCheckResults(checkId: number, limit = 25): Promise<Che
      LEFT JOIN users               u ON u.id = r.performed_by
      LEFT JOIN checklist_templates t ON t.id = r.checklist_template_id
      WHERE r.check_id = $1
-     ORDER BY r.created_at DESC
-     LIMIT $2`,
+     ORDER BY r.created_at DESC`,
     [checkId, limit]
   );
 }
@@ -112,7 +111,8 @@ export async function createCheck(input: {
   const row = await queryOne<{ id: number }>(
     `INSERT INTO checks
        (code, name, description, control_id, owner_user_id, frequency, checklist_template_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       input.code ?? null,
       input.name,
@@ -150,7 +150,8 @@ export async function recordResult(input: {
   const row = await queryOne<{ id: number }>(
     `INSERT INTO check_results
        (check_id, status, notes, evidence_url, evidence_name, evidence_mime, performed_by, checklist_template_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
       input.check_id,
       input.status,
@@ -167,7 +168,7 @@ export async function recordResult(input: {
   const check = await getCheck(input.check_id);
   const next = check ? nextDueFor(check.frequency) : null;
   await execute(
-    `UPDATE checks SET last_status = $2, last_result_at = NOW(), next_due_date = $3 WHERE id = $1`,
+    `UPDATE checks SET last_status = $2, last_result_at = SYSUTCDATETIME(), next_due_date = $3 WHERE id = $1`,
     [input.check_id, input.status, next]
   );
 

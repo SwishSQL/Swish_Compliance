@@ -11,7 +11,7 @@ const TPL_SELECT = `
   t.id, t.code, t.name, t.description, t.category, t.is_active,
   t.created_by, u.display_name AS created_by_name,
   t.created_at, t.updated_at,
-  (SELECT COUNT(*)::int FROM checklist_items i WHERE i.template_id = t.id) AS item_count
+  (SELECT COUNT(*) FROM checklist_items i WHERE i.template_id = t.id) AS item_count
 FROM checklist_templates t
 LEFT JOIN users u ON u.id = t.created_by
 `;
@@ -20,7 +20,7 @@ export async function listTemplates(search?: string): Promise<ChecklistTemplate[
   if (search && search.trim()) {
     return queryAll<ChecklistTemplate>(
       `SELECT ${TPL_SELECT}
-       WHERE t.name ILIKE $1 OR t.code ILIKE $1 OR t.category ILIKE $1
+       WHERE t.name LIKE $1 OR t.code LIKE $1 OR t.category LIKE $1
        ORDER BY t.updated_at DESC`,
       [`%${search.trim()}%`]
     );
@@ -81,26 +81,28 @@ export async function listAllQuestions(filters: {
     params.push(`%${filters.search}%`);
     const idx = params.length;
     conditions.push(
-      `(i.question ILIKE $${idx} OR i.code ILIKE $${idx} OR t.name ILIKE $${idx})`
+      `(i.question LIKE $${idx} OR i.code LIKE $${idx} OR t.name LIKE $${idx})`
     );
   }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   return queryAll<QuestionRow>(
-    `SELECT
+    `SELECT TOP (3000)
        i.id, i.code, i.section, i.question, i.weight, i.is_critical,
        i.template_id, t.code AS template_code, t.name AS template_name,
        COALESCE(
-         ARRAY_AGG(DISTINCT ch.control_id) FILTER (WHERE ch.control_id IS NOT NULL),
-         '{}'
-       ) AS control_ids
+         '[' + (SELECT STRING_AGG(CAST(x.control_id AS NVARCHAR(MAX)), ',')
+                       WITHIN GROUP (ORDER BY x.control_id)
+                  FROM (SELECT DISTINCT ch.control_id
+                          FROM check_checklist_items cci
+                          JOIN checks ch ON ch.id = cci.check_id
+                         WHERE cci.checklist_item_id = i.id
+                           AND ch.control_id IS NOT NULL) x) + ']',
+         '[]'
+       ) AS control_ids__json
      FROM checklist_items i
      JOIN checklist_templates t ON t.id = i.template_id
-     LEFT JOIN check_checklist_items cci ON cci.checklist_item_id = i.id
-     LEFT JOIN checks ch ON ch.id = cci.check_id
      ${where}
-     GROUP BY i.id, t.code, t.name
-     ORDER BY t.name, i.sort_order, i.id
-     LIMIT 3000`,
+     ORDER BY t.name, i.sort_order, i.id`,
     params
   );
 }
@@ -114,7 +116,8 @@ export async function createTemplate(input: {
 }): Promise<number> {
   const row = await queryOne<{ id: number }>(
     `INSERT INTO checklist_templates (code, name, description, category, created_by)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4, $5)`,
     [input.code ?? null, input.name, input.description ?? null, input.category ?? null, input.created_by]
   );
   return row!.id;
@@ -131,7 +134,7 @@ export async function updateTemplate(id: number, input: {
        name        = COALESCE($2, name),
        description = $3,
        category    = $4,
-       is_active   = COALESCE($5, is_active)
+       is_active   = COALESCE(CAST($5 AS BIT), is_active)
      WHERE id = $1`,
     [id, input.name ?? null, input.description ?? null, input.category ?? null, input.is_active ?? null]
   );
@@ -152,7 +155,8 @@ export async function addItem(input: {
   const sortOrder = row?.next_order ?? 1;
   const inserted = await queryOne<{ id: number }>(
     `INSERT INTO checklist_items (template_id, sort_order, question, guidance, weight, is_critical)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4, $5, $6)`,
     [input.template_id, sortOrder, input.question, input.guidance ?? null, input.weight ?? 1, input.is_critical ?? false]
   );
   return inserted!.id;
@@ -164,26 +168,30 @@ export async function deleteItem(id: number): Promise<void> {
 
 /**
  * One row per item in the template — the most recent answer, or no row
- * at all if the item has never been answered. DISTINCT ON keeps the
- * query simple and lets a partial index on (item_id, answered_at DESC)
- * serve it directly.
+ * at all if the item has never been answered (ROW_NUMBER per item, newest
+ * first, served by the index on (item_id, answered_at DESC)).
  */
 export async function listLatestAnswersForTemplate(
   templateId: number
 ): Promise<ChecklistItemLatestAnswer[]> {
   return queryAll<ChecklistItemLatestAnswer>(
-    `SELECT DISTINCT ON (a.item_id)
-       a.item_id,
-       a.answer,
-       a.note,
-       a.answered_by,
-       u.display_name AS answered_by_name,
-       a.answered_at
-     FROM checklist_item_answers a
-     JOIN checklist_items i ON i.id = a.item_id
-     LEFT JOIN users u      ON u.id = a.answered_by
-     WHERE i.template_id = $1
-     ORDER BY a.item_id, a.answered_at DESC, a.id DESC`,
+    `SELECT item_id, answer, note, answered_by, answered_by_name, answered_at
+     FROM (
+       SELECT
+         a.item_id,
+         a.answer,
+         a.note,
+         a.answered_by,
+         u.display_name AS answered_by_name,
+         a.answered_at,
+         ROW_NUMBER() OVER (PARTITION BY a.item_id ORDER BY a.answered_at DESC, a.id DESC) AS rn
+       FROM checklist_item_answers a
+       JOIN checklist_items i ON i.id = a.item_id
+       LEFT JOIN users u      ON u.id = a.answered_by
+       WHERE i.template_id = $1
+     ) s
+     WHERE rn = 1
+     ORDER BY item_id`,
     [templateId]
   );
 }

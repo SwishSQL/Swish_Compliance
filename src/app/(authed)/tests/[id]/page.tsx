@@ -35,7 +35,7 @@ export default async function CheckDetailPage({
   const checklists = await queryAll<{ id: number; name: string; category: string | null }>(
     `SELECT id, name, category
      FROM checklist_templates
-     WHERE is_active
+     WHERE is_active = 1
      ORDER BY name`
   );
 

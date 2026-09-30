@@ -38,15 +38,17 @@ export default async function AuditLogsPage({
 
   const rows = sp.search
     ? await queryAll<Row>(
-        `SELECT id, user_email, action, entity, entity_id, details, created_at
+        `SELECT TOP (200) id, user_email, action, entity, entity_id,
+                details AS details__json, created_at
          FROM audit_logs
-         WHERE user_email ILIKE $1 OR action ILIKE $1 OR entity ILIKE $1
-         ORDER BY created_at DESC LIMIT 200`,
+         WHERE user_email LIKE $1 OR action LIKE $1 OR entity LIKE $1
+         ORDER BY created_at DESC`,
         [`%${sp.search}%`]
       )
     : await queryAll<Row>(
-        `SELECT id, user_email, action, entity, entity_id, details, created_at
-         FROM audit_logs ORDER BY created_at DESC LIMIT 200`
+        `SELECT TOP (200) id, user_email, action, entity, entity_id,
+                details AS details__json, created_at
+         FROM audit_logs ORDER BY created_at DESC`
       );
 
   return (

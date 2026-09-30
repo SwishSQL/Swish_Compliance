@@ -20,17 +20,19 @@ const SOP_SELECT = `
   -- above is still the first of these, kept for the joins and scope walks
   -- that predate the junction.
   COALESCE(
-    (SELECT array_agg(sd.department_id ORDER BY dep.name)
-       FROM sop_departments sd JOIN departments dep ON dep.id = sd.department_id
-       WHERE sd.sop_id = s.id),
-    ARRAY[]::int[]
-  ) AS department_ids,
+    '[' + (SELECT STRING_AGG(CAST(sd.department_id AS NVARCHAR(MAX)), ',')
+                  WITHIN GROUP (ORDER BY dep.name)
+             FROM sop_departments sd JOIN departments dep ON dep.id = sd.department_id
+             WHERE sd.sop_id = s.id) + ']',
+    '[]'
+  ) AS department_ids__json,
   COALESCE(
-    (SELECT array_agg(dep.name ORDER BY dep.name)
-       FROM sop_departments sd JOIN departments dep ON dep.id = sd.department_id
-       WHERE sd.sop_id = s.id),
-    ARRAY[]::text[]
-  ) AS department_names
+    '[' + (SELECT STRING_AGG('"' + STRING_ESCAPE(CAST(dep.name AS NVARCHAR(MAX)), 'json') + '"', ',')
+                  WITHIN GROUP (ORDER BY dep.name)
+             FROM sop_departments sd JOIN departments dep ON dep.id = sd.department_id
+             WHERE sd.sop_id = s.id) + ']',
+    '[]'
+  ) AS department_names__json
 FROM sops s
 LEFT JOIN brands       b   ON b.id   = s.brand_id
 LEFT JOIN departments  d   ON d.id   = s.department_id
@@ -58,7 +60,7 @@ export async function listSops(f: ListFilters = {}): Promise<{ rows: Sop[]; tota
   }
   if (f.search) {
     params.push(`%${f.search}%`);
-    conditions.push(`(s.title ILIKE $${params.length} OR s.code ILIKE $${params.length})`);
+    conditions.push(`(s.title LIKE $${params.length} OR s.code LIKE $${params.length})`);
   }
   if (f.brandId) {
     params.push(f.brandId);
@@ -84,12 +86,12 @@ export async function listSops(f: ListFilters = {}): Promise<{ rows: Sop[]; tota
   const rows = await queryAll<Sop>(
     `SELECT ${SOP_SELECT} ${where}
      ORDER BY s.updated_at DESC
-     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+     OFFSET $${params.length} ROWS FETCH NEXT $${params.length - 1} ROWS ONLY`,
     params
   );
 
   const totalRow = await queryOne<{ total: number }>(
-    `SELECT COUNT(*)::int AS total FROM sops s ${where}`,
+    `SELECT COUNT(*) AS total FROM sops s ${where}`,
     params.slice(0, params.length - 2)
   );
 
@@ -167,8 +169,8 @@ async function replaceSopDepartments(
   await client.query(`DELETE FROM sop_departments WHERE sop_id = $1`, [sopId]);
   for (const departmentId of departmentIds) {
     await client.query(
-      `INSERT INTO sop_departments (sop_id, department_id)
-       VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      `IF NOT EXISTS (SELECT 1 FROM sop_departments WHERE sop_id = $1 AND department_id = $2)
+         INSERT INTO sop_departments (sop_id, department_id) VALUES ($1, $2)`,
       [sopId, departmentId]
     );
   }
@@ -192,10 +194,10 @@ export async function createSop(input: CreateSopInput): Promise<number> {
          purpose, scope, process_flow, roles_responsibilities,
          inputs_outputs, tools_forms, kpis,
          ownership_review, appendices, signatures_approval)
+       OUTPUT INSERTED.id
        VALUES ($1, $2, $3, $4, 'draft', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
                $15, $16,
-               $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
-       RETURNING id`,
+               $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)`,
       [
         input.code ?? null,
         input.title,
@@ -285,12 +287,12 @@ export async function updateSop(input: UpdateSopInput): Promise<void> {
          title                  = $3,
          description            = $4,
          file_url               = $5,
-         attachment_data_url    = CASE WHEN $6  THEN $7  ELSE attachment_data_url END,
-         attachment_name        = CASE WHEN $6  THEN $8  ELSE attachment_name     END,
-         attachment_mime        = CASE WHEN $6  THEN $9  ELSE attachment_mime     END,
+         attachment_data_url    = CASE WHEN $6 = 1 THEN $7  ELSE attachment_data_url END,
+         attachment_name        = CASE WHEN $6 = 1 THEN $8  ELSE attachment_name     END,
+         attachment_mime        = CASE WHEN $6 = 1 THEN $9  ELSE attachment_mime     END,
          brand_id               = $10,
          department_id          = $11,
-         owner_id               = COALESCE($12, owner_id),
+         owner_id               = COALESCE(CAST($12 AS INT), owner_id),
          effective_date         = $13,
          review_date            = $14,
          brand_is_function      = $15,
@@ -362,11 +364,10 @@ export type SopEvent = {
 /** Workflow / change history for a SOP, read from audit_logs. */
 export async function listSopEvents(sopId: number): Promise<SopEvent[]> {
   return queryAll<SopEvent>(
-    `SELECT id, action, user_email, details, created_at
+    `SELECT TOP (100) id, action, user_email, details AS details__json, created_at
      FROM audit_logs
      WHERE entity = 'sop' AND entity_id = $1
-     ORDER BY created_at DESC
-     LIMIT 100`,
+     ORDER BY created_at DESC`,
     [sopId]
   );
 }
@@ -378,7 +379,7 @@ export async function setSopStatus(
 ): Promise<void> {
   if (status === "approved") {
     await execute(
-      `UPDATE sops SET status = 'approved', approved_by = $1, approved_at = NOW() WHERE id = $2`,
+      `UPDATE sops SET status = 'approved', approved_by = $1, approved_at = SYSUTCDATETIME() WHERE id = $2`,
       [approverId, id]
     );
   } else {

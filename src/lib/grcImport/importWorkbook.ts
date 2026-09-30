@@ -3,15 +3,12 @@ import * as XLSX from "xlsx";
 import { withTransaction } from "@/lib/db";
 
 /**
- * In-app version of scripts/import_sop_grc_workbook.mjs — same sheet
- * shape, same field mappings, same idempotent upsert-by-code behaviour,
- * but driven from an uploaded file through the admin UI instead of a
- * CLI run against a local path. Kept as a single module so the two never
- * drift apart; if the CLI script needs a fix, port it here too (and vice
- * versa) until one is retired.
+ * GRC workbook importer, driven from an uploaded file through the admin UI
+ * (Admin -> Import Data). The PostgreSQL edition also had a CLI copy
+ * (scripts/import_sop_grc_workbook.mjs); this edition keeps only this one.
  *
  * Import is always additive: every insert upserts on the row's natural
- * code (ON CONFLICT DO UPDATE), and nothing is ever deleted. Uploading a
+ * code (MERGE), and nothing is ever deleted. Uploading a
  * template with new SOPs links them into the existing domain/framework/
  * control tree by matching codes and department names already in the
  * system — it does not replace or remove anything the template doesn't
@@ -159,18 +156,23 @@ export async function importGrcWorkbook(
         const code = txt(r["DOMAIN ID"]);
         if (!code) continue;
         const res = await client.query<{ id: number }>(
-          `INSERT INTO domains (code, name, description, sort_order, is_active, department_id,
-                                review_scope_method, evidence_to_obtain, review_focus, how_to_verify)
-           VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9)
-           ON CONFLICT (code) DO UPDATE SET
-             name = EXCLUDED.name, description = EXCLUDED.description,
-             sort_order = EXCLUDED.sort_order, is_active = TRUE,
-             department_id = EXCLUDED.department_id,
-             review_scope_method = EXCLUDED.review_scope_method,
-             evidence_to_obtain = EXCLUDED.evidence_to_obtain,
-             review_focus = EXCLUDED.review_focus,
-             how_to_verify = EXCLUDED.how_to_verify
-           RETURNING id`,
+          `DECLARE @out TABLE (id INT);
+           MERGE INTO domains WITH (HOLDLOCK) AS tgt
+           USING (SELECT $1 AS code) AS src ON tgt.code = src.code
+           WHEN MATCHED THEN UPDATE SET
+             name = $2, description = $3,
+             sort_order = $4, is_active = 1,
+             department_id = $5,
+             review_scope_method = $6,
+             evidence_to_obtain = $7,
+             review_focus = $8,
+             how_to_verify = $9
+           WHEN NOT MATCHED THEN
+             INSERT (code, name, description, sort_order, is_active, department_id,
+                     review_scope_method, evidence_to_obtain, review_focus, how_to_verify)
+             VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8, $9)
+           OUTPUT INSERTED.id INTO @out;
+           SELECT id FROM @out`,
           [
             code,
             txt(r["DOMAIN NAME"]),
@@ -235,7 +237,23 @@ export async function importGrcWorkbook(
         }
 
         const res = await client.query<{ id: number }>(
-          `INSERT INTO sops (
+          `DECLARE @out TABLE (id INT);
+           MERGE INTO sops WITH (HOLDLOCK) AS tgt
+           USING (SELECT $1 AS code) AS src ON tgt.code = src.code
+           WHEN MATCHED THEN UPDATE SET
+             title = $2, description = $3,
+             version = $4, status = 'approved',
+             department_id = $5,
+             brand_is_function = 1,
+             effective_date = $7, review_date = $8,
+             purpose = $9, scope = $10,
+             process_flow = $11,
+             roles_responsibilities = $12,
+             inputs_outputs = $13, tools_forms = $14,
+             kpis = $15, ownership_review = $16,
+             appendices = $17, signatures_approval = $18,
+             file_url = COALESCE($19, tgt.file_url)
+           WHEN NOT MATCHED THEN INSERT (
              code, title, description, version, status,
              brand_id, department_id, brand_is_function, is_all_departments,
              owner_id, created_by, approved_by, approved_at,
@@ -245,27 +263,15 @@ export async function importGrcWorkbook(
              file_url
            ) VALUES (
              $1,$2,$3,$4,'approved',
-             NULL,$5,TRUE,FALSE,
-             $6,$6,$6,NOW(),
+             NULL,$5,1,0,
+             $6,$6,$6,SYSUTCDATETIME(),
              $7,$8,
              $9,$10,$11,$12,$13,
              $14,$15,$16,$17,$18,
              $19
            )
-           ON CONFLICT (code) DO UPDATE SET
-             title = EXCLUDED.title, description = EXCLUDED.description,
-             version = EXCLUDED.version, status = EXCLUDED.status,
-             department_id = EXCLUDED.department_id,
-             brand_is_function = EXCLUDED.brand_is_function,
-             effective_date = EXCLUDED.effective_date, review_date = EXCLUDED.review_date,
-             purpose = EXCLUDED.purpose, scope = EXCLUDED.scope,
-             process_flow = EXCLUDED.process_flow,
-             roles_responsibilities = EXCLUDED.roles_responsibilities,
-             inputs_outputs = EXCLUDED.inputs_outputs, tools_forms = EXCLUDED.tools_forms,
-             kpis = EXCLUDED.kpis, ownership_review = EXCLUDED.ownership_review,
-             appendices = EXCLUDED.appendices, signatures_approval = EXCLUDED.signatures_approval,
-             file_url = COALESCE(EXCLUDED.file_url, sops.file_url)
-           RETURNING id`,
+           OUTPUT INSERTED.id INTO @out;
+           SELECT id FROM @out`,
           [
             code,
             txt(r.TITLE),
@@ -297,9 +303,12 @@ export async function importGrcWorkbook(
         // or imported SOPs would be invisible to non-admins.
         await client.query(
           `INSERT INTO sop_departments (sop_id, department_id)
-           SELECT id, department_id FROM sops
-           WHERE id = $1 AND department_id IS NOT NULL
-           ON CONFLICT DO NOTHING`,
+           SELECT s.id, s.department_id FROM sops s
+           WHERE s.id = $1 AND s.department_id IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM sop_departments sd
+               WHERE sd.sop_id = s.id AND sd.department_id = s.department_id
+             )`,
           [sopId]
         );
       }
@@ -322,15 +331,20 @@ export async function importGrcWorkbook(
         if (!code) continue;
         const sopCode = txt(r["RELATED SOP CODE"]);
         const res = await client.query<{ id: number }>(
-          `INSERT INTO frameworks (code, name, description, category, domain_id, is_active,
-                                   reference_source, sop_id, department_id)
-           VALUES ($1,$2,$3,$4,$5,TRUE,$6,$7,$8)
-           ON CONFLICT (code) DO UPDATE SET
-             name = EXCLUDED.name, description = EXCLUDED.description,
-             category = EXCLUDED.category, domain_id = EXCLUDED.domain_id,
-             is_active = TRUE, reference_source = EXCLUDED.reference_source,
-             sop_id = EXCLUDED.sop_id, department_id = EXCLUDED.department_id
-           RETURNING id`,
+          `DECLARE @out TABLE (id INT);
+           MERGE INTO frameworks WITH (HOLDLOCK) AS tgt
+           USING (SELECT $1 AS code) AS src ON tgt.code = src.code
+           WHEN MATCHED THEN UPDATE SET
+             name = $2, description = $3,
+             category = $4, domain_id = $5,
+             is_active = 1, reference_source = $6,
+             sop_id = $7, department_id = $8
+           WHEN NOT MATCHED THEN
+             INSERT (code, name, description, category, domain_id, is_active,
+                     reference_source, sop_id, department_id)
+             VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8)
+           OUTPUT INSERTED.id INTO @out;
+           SELECT id FROM @out`,
           [
             code,
             txt(r["FRAMEWORK NAME"]),
@@ -356,16 +370,21 @@ export async function importGrcWorkbook(
           risk ? `Risk / issue covered: ${risk}` : null
         );
         const res = await client.query<{ id: number }>(
-          `INSERT INTO controls (code, name, description, framework_id, category, is_active,
-                                 health_status, requirement, clause_reference, reviewer_prompt)
-           VALUES ($1,$2,$3,$4,$5,TRUE,'unknown',$6,$7,$8)
-           ON CONFLICT (code) DO UPDATE SET
-             name = EXCLUDED.name, description = EXCLUDED.description,
-             framework_id = EXCLUDED.framework_id, category = EXCLUDED.category,
-             is_active = TRUE, requirement = EXCLUDED.requirement,
-             clause_reference = EXCLUDED.clause_reference,
-             reviewer_prompt = EXCLUDED.reviewer_prompt
-           RETURNING id`,
+          `DECLARE @out TABLE (id INT);
+           MERGE INTO controls WITH (HOLDLOCK) AS tgt
+           USING (SELECT $1 AS code) AS src ON tgt.code = src.code
+           WHEN MATCHED THEN UPDATE SET
+             name = $2, description = $3,
+             framework_id = $4, category = $5,
+             is_active = 1, requirement = $6,
+             clause_reference = $7,
+             reviewer_prompt = $8
+           WHEN NOT MATCHED THEN
+             INSERT (code, name, description, framework_id, category, is_active,
+                     health_status, requirement, clause_reference, reviewer_prompt)
+             VALUES ($1,$2,$3,$4,$5,1,'unknown',$6,$7,$8)
+           OUTPUT INSERTED.id INTO @out;
+           SELECT id FROM @out`,
           [
             code,
             txt(r["CONTROL NAME"]),
@@ -382,8 +401,12 @@ export async function importGrcWorkbook(
         const sopId = sopIdByCode.get(txt(r["RELATED SOP CODE"]) ?? "");
         if (sopId) {
           await client.query(
-            `INSERT INTO control_links (control_id, entity_type, entity_id, created_by)
-             VALUES ($1,'sop',$2,$3) ON CONFLICT DO NOTHING`,
+            `IF NOT EXISTS (
+               SELECT 1 FROM control_links
+               WHERE control_id = $1 AND entity_type = 'sop' AND entity_id = $2
+             )
+             INSERT INTO control_links (control_id, entity_type, entity_id, created_by)
+             VALUES ($1,'sop',$2,$3)`,
             [res.rows[0].id, sopId, opts.importUserId]
           );
         }
@@ -395,12 +418,17 @@ export async function importGrcWorkbook(
         const code = txt(r["CHECKLIST ID"]);
         if (!code) continue;
         const res = await client.query<{ id: number }>(
-          `INSERT INTO checklist_templates (code, name, description, category, is_active, created_by)
-           VALUES ($1,$2,$3,$4,TRUE,$5)
-           ON CONFLICT (code) DO UPDATE SET
-             name = EXCLUDED.name, description = EXCLUDED.description,
-             category = EXCLUDED.category, is_active = TRUE
-           RETURNING id`,
+          `DECLARE @out TABLE (id INT);
+           MERGE INTO checklist_templates WITH (HOLDLOCK) AS tgt
+           USING (SELECT $1 AS code) AS src ON tgt.code = src.code
+           WHEN MATCHED THEN UPDATE SET
+             name = $2, description = $3,
+             category = $4, is_active = 1
+           WHEN NOT MATCHED THEN
+             INSERT (code, name, description, category, is_active, created_by)
+             VALUES ($1,$2,$3,$4,1,$5)
+           OUTPUT INSERTED.id INTO @out;
+           SELECT id FROM @out`,
           [code, txt(r["CHECKLIST NAME"]), txt(r["CHECKLIST DESCRIPTION"]), txt(r["DOMAIN NAME"]), opts.importUserId]
         );
         tplIdByCode.set(code, res.rows[0].id);
@@ -435,13 +463,18 @@ export async function importGrcWorkbook(
         );
 
         const res = await client.query<{ id: number }>(
-          `INSERT INTO checklist_items (template_id, code, sort_order, question, guidance, weight, is_critical, section)
-           VALUES ($1,$2,$3,$4,$5,1,$6,$7)
-           ON CONFLICT (code) DO UPDATE SET
-             template_id = EXCLUDED.template_id, sort_order = EXCLUDED.sort_order,
-             question = EXCLUDED.question, guidance = EXCLUDED.guidance,
-             is_critical = EXCLUDED.is_critical, section = EXCLUDED.section
-           RETURNING id`,
+          `DECLARE @out TABLE (id INT);
+           MERGE INTO checklist_items WITH (HOLDLOCK) AS tgt
+           USING (SELECT $2 AS code) AS src ON tgt.code = src.code
+           WHEN MATCHED THEN UPDATE SET
+             template_id = $1, sort_order = $3,
+             question = $4, guidance = $5,
+             is_critical = $6, section = $7
+           WHEN NOT MATCHED THEN
+             INSERT (template_id, code, sort_order, question, guidance, weight, is_critical, section)
+             VALUES ($1,$2,$3,$4,$5,1,$6,$7)
+           OUTPUT INSERTED.id INTO @out;
+           SELECT id FROM @out`,
           [
             templateId,
             code,
@@ -468,19 +501,24 @@ export async function importGrcWorkbook(
           txt(r["EVIDENCE DESCRIPTION"])
         );
         const res = await client.query<{ id: number }>(
-          `INSERT INTO checks (code, name, control_id, frequency, is_active, checklist_template_id,
-                               procedure_steps, frequency_label, evidence_code, evidence_needed,
-                               performer_role, fail_criteria)
-           VALUES ($1,$2,$3,'on_demand',TRUE,$4,$5,$6,$7,$8,$9,$10)
-           ON CONFLICT (code) DO UPDATE SET
-             name = EXCLUDED.name, control_id = EXCLUDED.control_id,
-             checklist_template_id = EXCLUDED.checklist_template_id,
-             procedure_steps = EXCLUDED.procedure_steps,
-             frequency_label = EXCLUDED.frequency_label,
-             evidence_code = EXCLUDED.evidence_code, evidence_needed = EXCLUDED.evidence_needed,
-             performer_role = EXCLUDED.performer_role, fail_criteria = EXCLUDED.fail_criteria,
-             is_active = TRUE
-           RETURNING id`,
+          `DECLARE @out TABLE (id INT);
+           MERGE INTO checks WITH (HOLDLOCK) AS tgt
+           USING (SELECT $1 AS code) AS src ON tgt.code = src.code
+           WHEN MATCHED THEN UPDATE SET
+             name = $2, control_id = $3,
+             checklist_template_id = $4,
+             procedure_steps = $5,
+             frequency_label = $6,
+             evidence_code = $7, evidence_needed = $8,
+             performer_role = $9, fail_criteria = $10,
+             is_active = 1
+           WHEN NOT MATCHED THEN
+             INSERT (code, name, control_id, frequency, is_active, checklist_template_id,
+                     procedure_steps, frequency_label, evidence_code, evidence_needed,
+                     performer_role, fail_criteria)
+             VALUES ($1,$2,$3,'on_demand',1,$4,$5,$6,$7,$8,$9,$10)
+           OUTPUT INSERTED.id INTO @out;
+           SELECT id FROM @out`,
           [
             code,
             txt(r["TEST NAME"]),
@@ -499,8 +537,12 @@ export async function importGrcWorkbook(
         const ctlId = ctlIdByCode.get(txt(r["CONTROL ID"]) ?? "");
         if (ctlId) {
           await client.query(
-            `INSERT INTO control_links (control_id, entity_type, entity_id, created_by)
-             VALUES ($1,'check',$2,$3) ON CONFLICT DO NOTHING`,
+            `IF NOT EXISTS (
+               SELECT 1 FROM control_links
+               WHERE control_id = $1 AND entity_type = 'check' AND entity_id = $2
+             )
+             INSERT INTO control_links (control_id, entity_type, entity_id, created_by)
+             VALUES ($1,'check',$2,$3)`,
             [ctlId, res.rows[0].id, opts.importUserId]
           );
         }
@@ -512,8 +554,11 @@ export async function importGrcWorkbook(
         const checkId = checkIdByCode.get(testCode ?? "");
         if (!checkId || !itemId) continue;
         await client.query(
-          `INSERT INTO check_checklist_items (check_id, checklist_item_id)
-           VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+          `IF NOT EXISTS (
+             SELECT 1 FROM check_checklist_items WHERE check_id = $1 AND checklist_item_id = $2
+           )
+           INSERT INTO check_checklist_items (check_id, checklist_item_id)
+           VALUES ($1,$2)`,
           [checkId, itemId]
         );
         links += 1;

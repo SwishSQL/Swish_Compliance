@@ -248,14 +248,18 @@ export async function createAuditAction(formData: FormData) {
   await insertAuditSops(id, sopIds);
 
   // Populate the audit_tests junction — this is what the audit detail page
-  // reads to build the question list. Bulk-insert via a single VALUES list
-  // so we don't fire N round-trips on the happy path.
+  // reads to build the question list. Bulk-insert from one JSON list (not
+  // one parameter per test — SQL Server caps a request at 2,100) so we
+  // don't fire N round-trips on the happy path.
   const testIds = scope.tests.map((t) => t.id);
-  const placeholders = testIds.map((_, i) => `($1, $${i + 2})`).join(", ");
   await execute(
-    `INSERT INTO audit_tests (audit_id, check_id) VALUES ${placeholders}
-     ON CONFLICT DO NOTHING`,
-    [id, ...testIds]
+    `INSERT INTO audit_tests (audit_id, check_id)
+     SELECT DISTINCT $1, CAST(j.value AS INT) FROM OPENJSON($2) j
+     WHERE NOT EXISTS (
+       SELECT 1 FROM audit_tests x
+       WHERE x.audit_id = $1 AND x.check_id = CAST(j.value AS INT)
+     )`,
+    [id, JSON.stringify(testIds)]
   );
 
   await execute(

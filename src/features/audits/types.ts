@@ -34,8 +34,13 @@ export const FINDING_THRESHOLD_PERCENT = 90;
  */
 export const AUDIT_RESPONSE_ANSWERED_SQL =
   `r.yes_percent IS NOT NULL AND (r.yes_percent + r.no_percent) > 0`;
+// T-SQL sizes a DECIMAL quotient from the operand precisions: a narrow
+// numerator over a wide denominator keeps 19 fractional digits (the plain
+// `* 100.0 /` form truncates to 7, which drifts the weighted score). NULLIF
+// because T-SQL, unlike PostgreSQL in practice, may evaluate this before the
+// ANSWERED guard next to it.
 export const AUDIT_RESPONSE_PERFORMANCE_SQL =
-  `(r.yes_percent * 100.0 / (r.yes_percent + r.no_percent))`;
+  `(CAST(r.yes_percent * 100 AS DECIMAL(5,0)) / CAST(NULLIF(r.yes_percent + r.no_percent, 0) AS DECIMAL(18,0)))`;
 export const AUDIT_RESPONSE_SHORTFALL_SQL =
   `${AUDIT_RESPONSE_ANSWERED_SQL} AND ${AUDIT_RESPONSE_PERFORMANCE_SQL} < ${FINDING_THRESHOLD_PERCENT}`;
 

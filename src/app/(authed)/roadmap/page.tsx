@@ -94,17 +94,17 @@ export default async function RoadmapPage({
   const frameworks = await queryAll<FrameworkRow>(
     `SELECT
        f.id, f.code, f.name, f.is_active,
-       COALESCE(SUM(CASE WHEN c.is_active THEN 1 ELSE 0 END), 0)::int AS total_controls,
-       COALESCE(SUM(CASE WHEN c.health_status = 'healthy' THEN 1 ELSE 0 END), 0)::int AS healthy,
-       COALESCE(SUM(CASE WHEN c.health_status = 'at_risk' THEN 1 ELSE 0 END), 0)::int AS at_risk,
-       COALESCE(SUM(CASE WHEN c.health_status = 'failing' THEN 1 ELSE 0 END), 0)::int AS failing,
-       COALESCE(SUM(CASE WHEN c.health_status = 'unknown' THEN 1 ELSE 0 END), 0)::int AS unknown,
+       COALESCE(SUM(CASE WHEN c.is_active = 1 THEN 1 ELSE 0 END), 0) AS total_controls,
+       COALESCE(SUM(CASE WHEN c.health_status = 'healthy' THEN 1 ELSE 0 END), 0) AS healthy,
+       COALESCE(SUM(CASE WHEN c.health_status = 'at_risk' THEN 1 ELSE 0 END), 0) AS at_risk,
+       COALESCE(SUM(CASE WHEN c.health_status = 'failing' THEN 1 ELSE 0 END), 0) AS failing,
+       COALESCE(SUM(CASE WHEN c.health_status = 'unknown' THEN 1 ELSE 0 END), 0) AS unknown,
        -- Open CAPAs reachable from this framework two ways: manually
        -- linked via control_links, OR born from an audit finding
        -- (source_audit_id → audits.framework_id). Audit-born CAPAs
        -- never get a control_links row, so without the second arm the
        -- count reads zero for them.
-       (SELECT COUNT(*)::int FROM corrective_actions ca
+       (SELECT COUNT(*) FROM corrective_actions ca
         WHERE ca.status IN ('open','in_progress','submitted')
           AND (
             EXISTS (SELECT 1 FROM control_links cl
@@ -115,13 +115,13 @@ export default async function RoadmapPage({
                        WHERE a.id = ca.source_audit_id
                          AND a.framework_id = f.id)
           )) AS open_capas,
-       (SELECT COUNT(*)::int FROM sops s
+       (SELECT COUNT(*) FROM sops s
         JOIN control_links cl ON cl.entity_type = 'sop' AND cl.entity_id = s.id
         JOIN controls cc ON cc.id = cl.control_id
         WHERE cc.framework_id = f.id AND s.status IN ('draft','pending_review')) AS draft_sops
      FROM frameworks f
      LEFT JOIN controls c ON c.framework_id = f.id
-     GROUP BY f.id
+     GROUP BY f.id, f.code, f.name, f.is_active
      ORDER BY f.is_active DESC, f.name`
   );
 
@@ -133,29 +133,37 @@ export default async function RoadmapPage({
   // excluded.
   const auditScores = await queryAll<FrameworkAuditScore>(
     `WITH latest AS (
-       SELECT DISTINCT ON (a.framework_id, a.control_id) a.id, a.framework_id
-       FROM audits a
-       WHERE a.status IN ('submitted','closed') AND a.framework_id IS NOT NULL
-       ORDER BY a.framework_id, a.control_id, a.audit_date DESC, a.id DESC
+       SELECT s.id, s.framework_id
+       FROM (
+         SELECT a.id, a.framework_id,
+                ROW_NUMBER() OVER (PARTITION BY a.framework_id, a.control_id
+                                   ORDER BY a.audit_date DESC, a.id DESC) AS rn
+         FROM audits a
+         WHERE a.status IN ('submitted','closed') AND a.framework_id IS NOT NULL
+       ) s
+       WHERE s.rn = 1
      )
      -- Answers are graded 0-100 (migration 054): weight is earned in
      -- proportion to Yes's share of the applicable (Yes+No) samples, and
      -- anything below the threshold is a finding — a 100%-N-A question
      -- counts toward neither total nor passed weight.
      SELECT l.framework_id,
-       COALESCE(SUM(CASE WHEN ${AUDIT_RESPONSE_ANSWERED_SQL} THEN i.weight ELSE 0 END),0)::int AS total_w,
-       COALESCE(SUM(
+       COALESCE(SUM(CASE WHEN ${AUDIT_RESPONSE_ANSWERED_SQL} THEN i.weight ELSE 0 END),0) AS total_w,
+       CAST(COALESCE(SUM(
          CASE WHEN ${AUDIT_RESPONSE_ANSWERED_SQL}
               THEN i.weight * ${AUDIT_RESPONSE_PERFORMANCE_SQL} / 100.0
-              ELSE 0 END),0)::float                                                            AS passed_w,
+              ELSE 0 END),0) AS FLOAT)                                                        AS passed_w,
        COALESCE(SUM(CASE WHEN ${AUDIT_RESPONSE_SHORTFALL_SQL}
                           AND ca.status IN ('verified','closed')
-                         THEN i.weight ELSE 0 END),0)::int                                    AS remediated_w,
-       (COUNT(*) FILTER (WHERE ${AUDIT_RESPONSE_ANSWERED_SQL} AND NOT (${AUDIT_RESPONSE_SHORTFALL_SQL})))::int AS passed_n,
-       (COUNT(*) FILTER (WHERE ${AUDIT_RESPONSE_SHORTFALL_SQL}
-                          AND ca.status IN ('verified','closed')))::int                       AS remediated_n,
-       (COUNT(*) FILTER (WHERE ${AUDIT_RESPONSE_SHORTFALL_SQL}
-                          AND (ca.id IS NULL OR ca.status NOT IN ('verified','closed'))))::int AS open_failed_n
+                         THEN i.weight ELSE 0 END),0)                                         AS remediated_w,
+       COALESCE(SUM(CASE WHEN ${AUDIT_RESPONSE_ANSWERED_SQL} AND NOT (${AUDIT_RESPONSE_SHORTFALL_SQL})
+                         THEN 1 ELSE 0 END),0)                                                AS passed_n,
+       COALESCE(SUM(CASE WHEN ${AUDIT_RESPONSE_SHORTFALL_SQL}
+                          AND ca.status IN ('verified','closed')
+                         THEN 1 ELSE 0 END),0)                                                AS remediated_n,
+       COALESCE(SUM(CASE WHEN ${AUDIT_RESPONSE_SHORTFALL_SQL}
+                          AND (ca.id IS NULL OR ca.status NOT IN ('verified','closed'))
+                         THEN 1 ELSE 0 END),0)                                                AS open_failed_n
      FROM latest l
      JOIN audit_responses r ON r.audit_id = l.id
      JOIN checklist_items i ON i.id = r.item_id
@@ -176,14 +184,15 @@ export default async function RoadmapPage({
     failing_checks: number;
   }>(
     `SELECT
-       (SELECT COUNT(*)::int FROM corrective_actions
-         WHERE due_date < CURRENT_DATE AND status IN ('open','in_progress','submitted'))    AS overdue_capas,
-       (SELECT COUNT(*)::int FROM checks
-         WHERE next_due_date < CURRENT_DATE AND is_active)                                  AS overdue_checks,
-       (SELECT COUNT(*)::int FROM corrective_actions
+       (SELECT COUNT(*) FROM corrective_actions
+         WHERE due_date < CAST(SYSUTCDATETIME() AS DATE)
+           AND status IN ('open','in_progress','submitted'))                                AS overdue_capas,
+       (SELECT COUNT(*) FROM checks
+         WHERE next_due_date < CAST(SYSUTCDATETIME() AS DATE) AND is_active = 1)            AS overdue_checks,
+       (SELECT COUNT(*) FROM corrective_actions
          WHERE severity = 'critical' AND status IN ('open','in_progress','submitted'))      AS critical_capas,
-       (SELECT COUNT(*)::int FROM sops WHERE status = 'pending_review')                     AS pending_sops,
-       (SELECT COUNT(*)::int FROM checks WHERE last_status = 'failing')                     AS failing_checks`
+       (SELECT COUNT(*) FROM sops WHERE status = 'pending_review')                          AS pending_sops,
+       (SELECT COUNT(*) FROM checks WHERE last_status = 'failing')                          AS failing_checks`
   );
 
   // Open audit findings — every failed audit question whose CAPA is
@@ -191,7 +200,7 @@ export default async function RoadmapPage({
   // not history, so it deliberately ignores the timeline date filter.
   // Overdue first, then by severity, then nearest due date.
   const openFindings = await queryAll<OpenFindingRow>(
-    `SELECT
+    `SELECT TOP (100)
        a.id AS audit_id,
        fw.name AS framework_name,
        ctrl.name AS control_name,
@@ -213,13 +222,12 @@ export default async function RoadmapPage({
        AND (ca.id IS NULL
             OR ca.status IN ('open','in_progress','submitted','rejected'))
      ORDER BY
-       CASE WHEN ca.due_date < CURRENT_DATE THEN 0 ELSE 1 END,
+       CASE WHEN ca.due_date < CAST(SYSUTCDATETIME() AS DATE) THEN 0 ELSE 1 END,
        CASE ca.severity
          WHEN 'critical' THEN 0 WHEN 'high' THEN 1
          WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
-       ca.due_date ASC NULLS LAST,
-       a.id DESC, i.sort_order, i.id
-     LIMIT 100`
+       CASE WHEN ca.due_date IS NULL THEN 1 ELSE 0 END, ca.due_date,
+       a.id DESC, i.sort_order, i.id`
   );
 
   // Test results timeline — every check_result inside the chosen window,
@@ -227,7 +235,7 @@ export default async function RoadmapPage({
   // the full lineage without per-row follow-ups. Order newest first.
   // toStr + " 23:59:59" makes the upper bound inclusive of the whole day.
   const testEvents = await queryAll<TestResultEvent>(
-    `SELECT
+    `SELECT TOP (200)
        r.id, r.check_id,
        ch.code AS check_code, ch.name AS check_name,
        ctrl.code AS control_code, ctrl.name AS control_name,
@@ -240,10 +248,9 @@ export default async function RoadmapPage({
      LEFT JOIN controls    ctrl ON ctrl.id = ch.control_id
      LEFT JOIN frameworks  f    ON f.id    = ctrl.framework_id
      LEFT JOIN users       u    ON u.id    = r.performed_by
-     WHERE r.created_at >= $1::timestamptz
-       AND r.created_at <  ($2::date + INTERVAL '1 day')
-     ORDER BY r.created_at DESC
-     LIMIT 200`,
+     WHERE r.created_at >= CAST($1 AS DATETIMEOFFSET(3))
+       AND r.created_at <  CAST(DATEADD(day, 1, CAST($2 AS DATE)) AS DATETIMEOFFSET(3))
+     ORDER BY r.created_at DESC`,
     [fromStr, toStr]
   );
 

@@ -9,27 +9,25 @@ export async function listForUser(
   const limit = Math.min(Math.max(opts.limit ?? 25, 1), 100);
   if (opts.unreadOnly) {
     return queryAll<Notification>(
-      `SELECT * FROM notifications
-       WHERE user_id = $1 AND is_read = FALSE
-       ORDER BY created_at DESC
-       LIMIT $2`,
+      `SELECT TOP ($2) * FROM notifications
+       WHERE user_id = $1 AND is_read = 0
+       ORDER BY created_at DESC`,
       [userId, limit]
     );
   }
   return queryAll<Notification>(
-    `SELECT * FROM notifications
+    `SELECT TOP ($2) * FROM notifications
      WHERE user_id = $1
-     ORDER BY created_at DESC
-     LIMIT $2`,
+     ORDER BY created_at DESC`,
     [userId, limit]
   );
 }
 
 export async function unreadCount(userId: number): Promise<number> {
   const row = await queryOne<{ n: number }>(
-    `SELECT COUNT(*)::int AS n
+    `SELECT COUNT(*) AS n
      FROM notifications
-     WHERE user_id = $1 AND is_read = FALSE`,
+     WHERE user_id = $1 AND is_read = 0`,
     [userId]
   );
   return row?.n ?? 0;
@@ -37,16 +35,16 @@ export async function unreadCount(userId: number): Promise<number> {
 
 export async function markRead(id: number, userId: number): Promise<void> {
   await execute(
-    `UPDATE notifications SET is_read = TRUE, read_at = NOW()
-     WHERE id = $1 AND user_id = $2 AND is_read = FALSE`,
+    `UPDATE notifications SET is_read = 1, read_at = SYSUTCDATETIME()
+     WHERE id = $1 AND user_id = $2 AND is_read = 0`,
     [id, userId]
   );
 }
 
 export async function markAllRead(userId: number): Promise<number> {
   return execute(
-    `UPDATE notifications SET is_read = TRUE, read_at = NOW()
-     WHERE user_id = $1 AND is_read = FALSE`,
+    `UPDATE notifications SET is_read = 1, read_at = SYSUTCDATETIME()
+     WHERE user_id = $1 AND is_read = 0`,
     [userId]
   );
 }
@@ -60,7 +58,7 @@ export async function deleteOne(id: number, userId: number): Promise<void> {
 
 export async function deleteAllRead(userId: number): Promise<number> {
   return execute(
-    `DELETE FROM notifications WHERE user_id = $1 AND is_read = TRUE`,
+    `DELETE FROM notifications WHERE user_id = $1 AND is_read = 1`,
     [userId]
   );
 }

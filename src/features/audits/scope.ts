@@ -77,34 +77,37 @@ export async function loadScopeGraph(): Promise<ScopeGraph> {
   const [domains, frameworks, controls, tests] = await Promise.all([
     queryAll<ScopeGraphDomain>(
       `SELECT id, code, name, sop_id, department_id
-       FROM domains WHERE is_active
+       FROM domains WHERE is_active = 1
        ORDER BY sort_order, name`
     ),
     queryAll<ScopeGraphFramework>(
       `SELECT id, code, name, domain_id, sop_id, department_id
-       FROM frameworks WHERE is_active
+       FROM frameworks WHERE is_active = 1
        ORDER BY code, name`
     ),
     queryAll<ScopeGraphControl>(
-      `SELECT id, code, name, framework_id
-       FROM controls WHERE is_active
-       ORDER BY code NULLS LAST, name
-       LIMIT 2000`
+      `SELECT TOP (2000) id, code, name, framework_id
+       FROM controls WHERE is_active = 1
+       ORDER BY CASE WHEN code IS NULL THEN 1 ELSE 0 END, code, name`
     ),
     queryAll<ScopeGraphTest>(
-      `SELECT ch.id, ch.code, ch.name, ch.control_id,
+      `SELECT TOP (3000) ch.id, ch.code, ch.name, ch.control_id,
               COALESCE(
-                ARRAY_AGG(DISTINCT i.template_id) FILTER (WHERE i.template_id IS NOT NULL),
-                '{}'
-              ) AS template_ids,
-              COUNT(i.id)::int AS question_count
+                '[' + (SELECT STRING_AGG(CAST(x.template_id AS NVARCHAR(MAX)), ',')
+                              WITHIN GROUP (ORDER BY x.template_id)
+                         FROM (SELECT DISTINCT i.template_id
+                                 FROM check_checklist_items cci
+                                 JOIN checklist_items i ON i.id = cci.checklist_item_id
+                                WHERE cci.check_id = ch.id) x) + ']',
+                '[]'
+              ) AS template_ids__json,
+              (SELECT COUNT(i.id)
+                 FROM check_checklist_items cci
+                 JOIN checklist_items i ON i.id = cci.checklist_item_id
+                WHERE cci.check_id = ch.id) AS question_count
        FROM checks ch
-       LEFT JOIN check_checklist_items cci ON cci.check_id = ch.id
-       LEFT JOIN checklist_items i ON i.id = cci.checklist_item_id
-       WHERE ch.is_active
-       GROUP BY ch.id
-       ORDER BY ch.code NULLS LAST, ch.name
-       LIMIT 3000`
+       WHERE ch.is_active = 1
+       ORDER BY CASE WHEN ch.code IS NULL THEN 1 ELSE 0 END, ch.code, ch.name`
     ),
   ]);
   return { domains, frameworks, controls, tests };
@@ -171,7 +174,7 @@ export async function resolveScope(
        FROM frameworks f
        LEFT JOIN domains d ON d.id = f.domain_id
        WHERE f.id = $1
-         AND f.is_active
+         AND f.is_active = 1
          AND COALESCE(f.sop_id, d.sop_id) = $2
          AND COALESCE(f.department_id, d.department_id) = $3`,
       [input.frameworkId, sopIds[0], departmentId]
@@ -190,7 +193,7 @@ export async function resolveScope(
        FROM frameworks f
        JOIN domains d ON d.id = f.domain_id
        WHERE d.id = $1
-         AND f.is_active
+         AND f.is_active = 1
          AND d.sop_id = $2
          AND d.department_id = $3`,
       [input.domainId, sopIds[0], departmentId]
@@ -203,7 +206,7 @@ export async function resolveScope(
       `SELECT DISTINCT f.id
        FROM frameworks f
        LEFT JOIN domains d ON d.id = f.domain_id
-       WHERE f.is_active
+       WHERE f.is_active = 1
          AND COALESCE(f.sop_id, d.sop_id) = ANY($1::int[])
          AND COALESCE(f.department_id, d.department_id) = $2`,
       [sopIds, departmentId]
@@ -227,8 +230,8 @@ export async function resolveScope(
     name: string;
   }>(
     `SELECT id, code, name FROM controls
-     WHERE is_active AND framework_id = ANY($1::int[])
-     ORDER BY code NULLS LAST, name`,
+     WHERE is_active = 1 AND framework_id = ANY($1::int[])
+     ORDER BY CASE WHEN code IS NULL THEN 1 ELSE 0 END, code, name`,
     [frameworkIds]
   );
   if (controls.length === 0) {
@@ -242,8 +245,8 @@ export async function resolveScope(
     name: string;
   }>(
     `SELECT id, code, name FROM checks
-     WHERE is_active AND control_id = ANY($1::int[])
-     ORDER BY code NULLS LAST, name`,
+     WHERE is_active = 1 AND control_id = ANY($1::int[])
+     ORDER BY CASE WHEN code IS NULL THEN 1 ELSE 0 END, code, name`,
     [controlIds]
   );
   if (tests.length === 0) {
@@ -252,7 +255,7 @@ export async function resolveScope(
 
   const testIds = tests.map((t) => t.id);
   const items = await queryAll<{ template_id: number; question_count: number }>(
-    `SELECT i.template_id, COUNT(DISTINCT i.id)::int AS question_count
+    `SELECT i.template_id, COUNT(DISTINCT i.id) AS question_count
      FROM check_checklist_items cci
      JOIN checklist_items i ON i.id = cci.checklist_item_id
      WHERE cci.check_id = ANY($1::int[])

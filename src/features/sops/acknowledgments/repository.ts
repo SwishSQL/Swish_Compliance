@@ -27,7 +27,7 @@ export async function eligibleUserIds(sopId: number): Promise<number[]> {
   const rows = await queryAll<{ id: number }>(
     `SELECT u.id
      FROM users u
-     WHERE u.is_active
+     WHERE u.is_active = 1
        AND (
          u.role = 'admin'
          OR NOT EXISTS (SELECT 1 FROM sop_departments sd WHERE sd.sop_id = $1)
@@ -46,7 +46,7 @@ export async function hasUserAcknowledged(
   userId: number
 ): Promise<boolean> {
   const row = await queryOne<{ id: number }>(
-    `SELECT id FROM sop_acknowledgments WHERE sop_id = $1 AND user_id = $2 LIMIT 1`,
+    `SELECT TOP (1) id FROM sop_acknowledgments WHERE sop_id = $1 AND user_id = $2`,
     [sopId, userId]
   );
   return !!row;
@@ -62,8 +62,11 @@ export async function recordAcknowledgment(input: {
   await execute(
     `INSERT INTO sop_acknowledgments
        (sop_id, user_id, user_role, user_agent, ip_address)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (sop_id, user_id) DO NOTHING`,
+     SELECT $1, $2, $3, $4, $5
+     WHERE NOT EXISTS (
+       SELECT 1 FROM sop_acknowledgments WITH (UPDLOCK, HOLDLOCK)
+       WHERE sop_id = $1 AND user_id = $2
+     )`,
     [
       input.sop_id,
       input.user_id,
@@ -85,7 +88,7 @@ export async function getAckStats(sopId: number): Promise<AckStats> {
     return { total_eligible: 0, acknowledged_count: 0, percent: 0 };
   }
   const acked = await queryOne<{ n: number }>(
-    `SELECT COUNT(*)::int AS n
+    `SELECT COUNT(*) AS n
      FROM sop_acknowledgments
      WHERE sop_id = $1 AND user_id = ANY($2::int[])`,
     [sopId, eligibles]
@@ -103,13 +106,12 @@ export async function listAcknowledgments(
   limit = 100
 ): Promise<Acknowledgment[]> {
   return queryAll<Acknowledgment>(
-    `SELECT a.id, a.sop_id, a.user_id, a.acknowledged_at, a.user_role,
+    `SELECT TOP ($2) a.id, a.sop_id, a.user_id, a.acknowledged_at, a.user_role,
             u.display_name AS user_name, u.email AS user_email
      FROM sop_acknowledgments a
      JOIN users u ON u.id = a.user_id
      WHERE a.sop_id = $1
-     ORDER BY a.acknowledged_at DESC
-     LIMIT $2`,
+     ORDER BY a.acknowledged_at DESC`,
     [sopId, limit]
   );
 }
@@ -125,7 +127,7 @@ export async function listSopsAwaitingAck(
   limit = 25
 ): Promise<Array<{ id: number; code: string | null; title: string; approved_at: string | null }>> {
   return queryAll(
-    `SELECT s.id, s.code, s.title, s.approved_at
+    `SELECT TOP ($4) s.id, s.code, s.title, s.approved_at
      FROM sops s
      WHERE s.status = 'approved'
        AND (
@@ -141,8 +143,7 @@ export async function listSopsAwaitingAck(
          SELECT 1 FROM sop_acknowledgments a
          WHERE a.sop_id = s.id AND a.user_id = $1
        )
-     ORDER BY s.approved_at DESC NULLS LAST
-     LIMIT $4`,
+     ORDER BY s.approved_at DESC`,
     [userId, userRole, userDepartmentId, limit]
   );
 }

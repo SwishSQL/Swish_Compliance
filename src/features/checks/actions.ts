@@ -57,8 +57,9 @@ export async function createCheckAction(formData: FormData) {
   );
   if (parsed.control_id) {
     await execute(
-      `INSERT INTO control_links (control_id, entity_type, entity_id, created_by)
-       VALUES ($1, 'check', $2, $3) ON CONFLICT DO NOTHING`,
+      `IF NOT EXISTS (SELECT 1 FROM control_links WHERE control_id = $1 AND entity_type = 'check' AND entity_id = $2)
+         INSERT INTO control_links (control_id, entity_type, entity_id, created_by)
+         VALUES ($1, 'check', $2, $3)`,
       [parsed.control_id, id, user.id]
     );
   }
@@ -85,7 +86,7 @@ export async function setCheckOwnerAction(formData: FormData) {
     throw new Error("Invalid owner.");
   }
   await execute(
-    `UPDATE checks SET owner_user_id = $2::int WHERE id = $1::int`,
+    `UPDATE checks SET owner_user_id = $2 WHERE id = $1`,
     [id, ownerId]
   );
   revalidatePath(`/tests/${id}`);
@@ -143,8 +144,9 @@ export async function recordResultAction(formData: FormData) {
     });
     if (check?.control_id) {
       await execute(
-        `INSERT INTO control_links (control_id, entity_type, entity_id, created_by)
-         VALUES ($1, 'capa', $2, $3) ON CONFLICT DO NOTHING`,
+        `IF NOT EXISTS (SELECT 1 FROM control_links WHERE control_id = $1 AND entity_type = 'capa' AND entity_id = $2)
+           INSERT INTO control_links (control_id, entity_type, entity_id, created_by)
+           VALUES ($1, 'capa', $2, $3)`,
         [check.control_id, capaId, user.id]
       );
     }

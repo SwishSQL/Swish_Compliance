@@ -10,14 +10,22 @@ import type { OrgUnit, OrgUnitOption } from "./types";
 export async function listOrgUnitsAsTree(
   includeInactive = false
 ): Promise<OrgUnit[]> {
-  const filter = includeInactive ? "" : "WHERE is_active";
+  const filter = includeInactive ? "" : "WHERE is_active = 1";
+  // path = one fixed-width 20-digit segment per level: sort_order shifted
+  // by 2^31 (so negatives sort correctly) then id, each zero-padded to 10.
+  // Comparing these strings orders rows exactly like PG's int[] path did.
   return queryAll<OrgUnit>(
-    `WITH RECURSIVE tree AS (
-       SELECT u.*, ARRAY[u.sort_order, u.id] AS path
+    `WITH tree AS (
+       SELECT u.*,
+              CAST(RIGHT('0000000000' + CAST(CAST(u.sort_order AS BIGINT) + 2147483648 AS VARCHAR(10)), 10)
+                 + RIGHT('0000000000' + CAST(u.id AS VARCHAR(10)), 10) AS VARCHAR(MAX)) AS path
        FROM org_units u
        WHERE u.parent_id IS NULL
        UNION ALL
-       SELECT c.*, t.path || ARRAY[c.sort_order, c.id]
+       SELECT c.*,
+              CAST(t.path
+                 + RIGHT('0000000000' + CAST(CAST(c.sort_order AS BIGINT) + 2147483648 AS VARCHAR(10)), 10)
+                 + RIGHT('0000000000' + CAST(c.id AS VARCHAR(10)), 10) AS VARCHAR(MAX))
        FROM org_units c
        JOIN tree t ON c.parent_id = t.id
      )
@@ -87,7 +95,8 @@ export async function createOrgUnit(input: {
   }
   const row = await queryOne<{ id: number }>(
     `INSERT INTO org_units (code, name, parent_id, level, sort_order)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4, $5)`,
     [input.code, input.name, input.parent_id, level, sortOrder]
   );
   return row!.id;
@@ -100,8 +109,8 @@ export async function updateOrgUnit(
   await execute(
     `UPDATE org_units SET
        name       = COALESCE($2, name),
-       sort_order = COALESCE($3, sort_order),
-       is_active  = COALESCE($4, is_active)
+       sort_order = COALESCE(CAST($3 AS INT), sort_order),
+       is_active  = COALESCE(CAST($4 AS BIT), is_active)
      WHERE id = $1`,
     [id, input.name ?? null, input.sort_order ?? null, input.is_active ?? null]
   );

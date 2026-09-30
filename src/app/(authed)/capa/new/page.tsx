@@ -7,13 +7,13 @@ import { createCapaAction } from "@/features/capa/actions";
 export default async function NewCapaPage() {
   const user = await requireUser();
   const brands = await queryAll<{ id: number; name: string }>(
-    `SELECT id, name FROM brands WHERE is_active ORDER BY name`
+    `SELECT id, name FROM brands WHERE is_active = 1 ORDER BY name`
   );
   const departments = await queryAll<{ id: number; name: string }>(
-    `SELECT id, name FROM departments WHERE is_active ORDER BY name`
+    `SELECT id, name FROM departments WHERE is_active = 1 ORDER BY name`
   );
   const users = await queryAll<{ id: number; display_name: string; email: string }>(
-    `SELECT id, display_name, email FROM users WHERE is_active ORDER BY display_name`
+    `SELECT id, display_name, email FROM users WHERE is_active = 1 ORDER BY display_name`
   );
 
   const due = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];

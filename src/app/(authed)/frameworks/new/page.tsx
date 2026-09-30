@@ -18,16 +18,16 @@ export default async function NewFrameworkPage({
 
   const [domains, sops, departments, users, categories] = await Promise.all([
     queryAll<{ id: number; code: string; name: string }>(
-      `SELECT id, code, name FROM domains WHERE is_active ORDER BY sort_order, name`
+      `SELECT id, code, name FROM domains WHERE is_active = 1 ORDER BY sort_order, name`
     ),
     queryAll<{ id: number; code: string | null; title: string }>(
-      `SELECT id, code, title FROM sops WHERE status = 'approved' ORDER BY code NULLS LAST, title`
+      `SELECT id, code, title FROM sops WHERE status = 'approved' ORDER BY CASE WHEN code IS NULL THEN 1 ELSE 0 END, code, title`
     ),
     queryAll<{ id: number; name: string }>(
-      `SELECT id, name FROM departments WHERE is_active ORDER BY name`
+      `SELECT id, name FROM departments WHERE is_active = 1 ORDER BY name`
     ),
     queryAll<{ id: number; display_name: string }>(
-      `SELECT id, display_name FROM users WHERE is_active ORDER BY display_name`
+      `SELECT id, display_name FROM users WHERE is_active = 1 ORDER BY display_name`
     ),
     listOptions("framework_category", true),
   ]);

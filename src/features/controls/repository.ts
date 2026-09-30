@@ -8,9 +8,9 @@ const CTRL_SELECT = `
   c.is_active, c.health_status, c.health_updated_at, c.created_at, c.updated_at,
   c.requirement, c.clause_reference, c.evidence_required, c.reviewer_prompt,
   c.risk_weight, c.control_type, c.frequency,
-  (SELECT COUNT(*)::int FROM control_links cl WHERE cl.control_id = c.id AND cl.entity_type = 'sop')   AS linked_sops,
-  (SELECT COUNT(*)::int FROM checks ch WHERE ch.control_id = c.id)                                     AS linked_checks,
-  (SELECT COUNT(*)::int FROM corrective_actions ca
+  (SELECT COUNT(*) FROM control_links cl WHERE cl.control_id = c.id AND cl.entity_type = 'sop')   AS linked_sops,
+  (SELECT COUNT(*) FROM checks ch WHERE ch.control_id = c.id)                                     AS linked_checks,
+  (SELECT COUNT(*) FROM corrective_actions ca
     JOIN control_links cl ON cl.entity_type = 'capa' AND cl.entity_id = ca.id
     WHERE cl.control_id = c.id AND ca.status IN ('open','in_progress','submitted'))                     AS open_capas
 FROM controls c
@@ -27,7 +27,7 @@ export async function listControls(filters: {
   const params: unknown[] = [];
   if (filters.search) {
     params.push(`%${filters.search}%`);
-    conditions.push(`(c.name ILIKE $${params.length} OR c.code ILIKE $${params.length})`);
+    conditions.push(`(c.name LIKE $${params.length} OR c.code LIKE $${params.length})`);
   }
   if (filters.framework_id) {
     params.push(filters.framework_id);
@@ -66,7 +66,8 @@ export async function createControl(input: {
 }): Promise<number> {
   const row = await queryOne<{ id: number }>(
     `INSERT INTO controls (code, name, description, framework_id, category, owner_user_id, health_status)
-     VALUES ($1, $2, $3, $4, $5, $6, 'unknown') RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4, $5, $6, 'unknown')`,
     [
       input.code ?? null,
       input.name,
@@ -86,8 +87,9 @@ export async function linkControl(input: {
   created_by: number;
 }): Promise<void> {
   await execute(
-    `INSERT INTO control_links (control_id, entity_type, entity_id, created_by)
-     VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+    `IF NOT EXISTS (SELECT 1 FROM control_links WHERE control_id = $1 AND entity_type = $2 AND entity_id = $3)
+       INSERT INTO control_links (control_id, entity_type, entity_id, created_by)
+       VALUES ($1, $2, $3, $4)`,
     [input.control_id, input.entity_type, input.entity_id, input.created_by]
   );
 }
@@ -109,7 +111,7 @@ export async function listControlLinks(controlId: number): Promise<{
          WHEN 'sop'    THEN (SELECT title FROM sops WHERE id = cl.entity_id)
          WHEN 'check'  THEN (SELECT name  FROM checks WHERE id = cl.entity_id)
          WHEN 'capa'   THEN (SELECT title FROM corrective_actions WHERE id = cl.entity_id)
-         WHEN 'audit'  THEN (SELECT 'Audit #' || cl.entity_id::text)
+         WHEN 'audit'  THEN (SELECT 'Audit #' + CAST(cl.entity_id AS NVARCHAR(20)))
        END AS label,
        CASE cl.entity_type
          WHEN 'sop'    THEN (SELECT status FROM sops WHERE id = cl.entity_id)
@@ -142,19 +144,19 @@ export async function recomputeControlHealth(controlId: number): Promise<Control
     open_capas: number;
   }>(
     `SELECT
-       COALESCE(SUM(CASE WHEN ch.last_status = 'failing'        THEN 1 ELSE 0 END),0)::int AS failing,
-       COALESCE(SUM(CASE WHEN ch.last_status = 'passing'        THEN 1 ELSE 0 END),0)::int AS passing,
-       COALESCE(SUM(CASE WHEN ch.last_status = 'pending_review' THEN 1 ELSE 0 END),0)::int AS pending,
-       COUNT(ch.*)::int                                                                       AS total,
-       (SELECT COUNT(*)::int FROM corrective_actions ca
+       COALESCE(SUM(CASE WHEN ch.last_status = 'failing'        THEN 1 ELSE 0 END),0) AS failing,
+       COALESCE(SUM(CASE WHEN ch.last_status = 'passing'        THEN 1 ELSE 0 END),0) AS passing,
+       COALESCE(SUM(CASE WHEN ch.last_status = 'pending_review' THEN 1 ELSE 0 END),0) AS pending,
+       COUNT(*)                                                                      AS total,
+       (SELECT COUNT(*) FROM corrective_actions ca
         JOIN control_links cl ON cl.entity_type = 'capa' AND cl.entity_id = ca.id
         WHERE cl.control_id = $1 AND ca.severity = 'critical'
           AND ca.status IN ('open','in_progress','submitted'))                                AS critical_open_capas,
-       (SELECT COUNT(*)::int FROM corrective_actions ca
+       (SELECT COUNT(*) FROM corrective_actions ca
         JOIN control_links cl ON cl.entity_type = 'capa' AND cl.entity_id = ca.id
         WHERE cl.control_id = $1 AND ca.status IN ('open','in_progress','submitted'))         AS open_capas
      FROM checks ch
-     WHERE ch.control_id = $1 AND ch.is_active`,
+     WHERE ch.control_id = $1 AND ch.is_active = 1`,
     [controlId]
   );
 
@@ -165,7 +167,7 @@ export async function recomputeControlHealth(controlId: number): Promise<Control
     else if (row.total > 0 && row.passing === row.total) next = "healthy";
   }
   await execute(
-    `UPDATE controls SET health_status = $2, health_updated_at = NOW() WHERE id = $1`,
+    `UPDATE controls SET health_status = $2, health_updated_at = SYSUTCDATETIME() WHERE id = $1`,
     [controlId, next]
   );
   return next;

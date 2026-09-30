@@ -268,9 +268,9 @@ export async function submitCapaForReviewAction(formData: FormData) {
   await execute(
     `UPDATE corrective_actions
        SET status = 'submitted',
-           submitted_at = NOW(),
+           submitted_at = SYSUTCDATETIME(),
            rejection_reason = NULL
-     WHERE id = $1::int`,
+     WHERE id = $1`,
     [capaId]
   );
 
@@ -344,7 +344,7 @@ export async function rejectCapaAction(formData: FormData) {
        SET status = 'rejected',
            rejection_reason = $2,
            submitted_at = NULL
-     WHERE id = $1::int`,
+     WHERE id = $1`,
     [capaId, reason]
   );
 

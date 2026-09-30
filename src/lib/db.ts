@@ -8,20 +8,17 @@ import { translateQuery } from "@/lib/sqlTranslate";
  *
  * This deliberately keeps the exact API the app was built against when it
  * ran on PostgreSQL — `queryAll` / `queryOne` / `execute` / `withTransaction`,
- * all taking pg-style `$1, $2` placeholders — so the ~285 query call sites
- * across the app did not have to be rewritten. Placeholder translation
- * happens in `sqlTranslate.ts`; result shapes are normalised here.
+ * all taking pg-style `$1, $2` placeholders. The query text itself is native
+ * T-SQL (see docs/TSQL-CONVERSION-GUIDE.md); only the placeholders and
+ * `= ANY($n)` array comparisons are translated at runtime, in
+ * `sqlTranslate.ts`. Result shapes are normalised here.
  *
- * Two things behave differently from `pg` and are worth knowing:
- *
- *   - `COUNT(*)` comes back as a JS number. Postgres returns `bigint` as a
- *     string, which is why so many queries say `COUNT(*)::int`. Those casts
- *     are invalid T-SQL and are being removed as queries get ported.
+ * Worth knowing:
  *
  *   - A NULL parameter is bound as NVARCHAR. That is harmless when it is
  *     inserted, assigned or compared, but `COALESCE($1, some_non_text_col)`
  *     would resolve to NVARCHAR by type precedence. Those sites need an
- *     explicit CAST in the SQL — see PORTING.md.
+ *     explicit CAST in the SQL.
  */
 
 /** How long to wait for a free pooled connection before giving up. */
@@ -225,7 +222,7 @@ export async function execute(
 ): Promise<number> {
   const res = await run(text, params);
   // One entry per statement in the batch. Triggers set NOCOUNT ON so they
-  // do not inflate this (see sql/000_helpers.sql).
+  // do not inflate this (see sql/001_baseline.sql).
   return (res.rowsAffected ?? []).reduce((sum, n) => sum + n, 0);
 }
 

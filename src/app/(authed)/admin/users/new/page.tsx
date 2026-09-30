@@ -8,7 +8,7 @@ import MultiSelect from "@/features/admin/users/MultiSelect";
 export default async function NewUserPage() {
   const me = await requireAdmin();
   const departments = await queryAll<{ id: number; name: string }>(
-    `SELECT id, name FROM departments WHERE is_active ORDER BY name`
+    `SELECT id, name FROM departments WHERE is_active = 1 ORDER BY name`
   );
 
   return (

@@ -5,7 +5,7 @@ import type { ConfigOption } from "./types";
 export async function listOptions(kind: string, activeOnly = false): Promise<ConfigOption[]> {
   if (activeOnly) {
     return queryAll<ConfigOption>(
-      `SELECT * FROM config_options WHERE kind = $1 AND is_active = TRUE
+      `SELECT * FROM config_options WHERE kind = $1 AND is_active = 1
        ORDER BY sort_order ASC, label ASC`,
       [kind]
     );
@@ -39,7 +39,8 @@ export async function createOption(input: {
 
   const row = await queryOne<{ id: number }>(
     `INSERT INTO config_options (kind, value, label, sort_order)
-     VALUES ($1, $2, $3, $4) RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4)`,
     [input.kind, value, input.label, nextOrder?.n ?? 1]
   );
   return row!.id;
@@ -65,12 +66,12 @@ export async function moveOption(id: number, direction: "up" | "down"): Promise<
   if (!me) return;
   const neighbour = await queryOne<{ id: number; sort_order: number }>(
     direction === "up"
-      ? `SELECT id, sort_order FROM config_options
+      ? `SELECT TOP (1) id, sort_order FROM config_options
            WHERE kind = $1 AND sort_order < $2
-           ORDER BY sort_order DESC LIMIT 1`
-      : `SELECT id, sort_order FROM config_options
+           ORDER BY sort_order DESC`
+      : `SELECT TOP (1) id, sort_order FROM config_options
            WHERE kind = $1 AND sort_order > $2
-           ORDER BY sort_order ASC LIMIT 1`,
+           ORDER BY sort_order ASC`,
     [me.kind, me.sort_order]
   );
   if (!neighbour) return;

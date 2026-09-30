@@ -42,7 +42,7 @@ export default async function QuestionsPage({
     : allQuestions;
 
   const checklists = await queryAll<{ id: number; name: string }>(
-    `SELECT id, name FROM checklist_templates WHERE is_active ORDER BY name`
+    `SELECT id, name FROM checklist_templates WHERE is_active = 1 ORDER BY name`
   );
 
   return (

@@ -74,15 +74,14 @@ export async function listCapas(filters: {
   }
   if (filters.search) {
     params.push(`%${filters.search}%`);
-    conditions.push(`(c.title ILIKE $${params.length} OR c.code ILIKE $${params.length})`);
+    conditions.push(`(c.title LIKE $${params.length} OR c.code LIKE $${params.length})`);
   }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   return queryAll<Capa>(
-    `SELECT ${CAPA_SELECT} ${where}
+    `SELECT TOP (200) ${CAPA_SELECT} ${where}
      ORDER BY
        CASE c.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'submitted' THEN 2 ELSE 3 END,
-       c.due_date NULLS LAST, c.id DESC
-     LIMIT 200`,
+       CASE WHEN c.due_date IS NULL THEN 1 ELSE 0 END, c.due_date, c.id DESC`,
     params
   );
 }
@@ -107,23 +106,23 @@ export async function getCapaAuditorContext(
        f.code          AS framework_code, f.name AS framework_name,
        ctrl.code       AS control_code,   ctrl.name AS control_name,
        -- Pick the FIRST test that surfaced this item for this audit
-       (SELECT ch.code FROM audit_tests at
+       (SELECT TOP (1) ch.code FROM audit_tests at
         JOIN check_checklist_items cci ON cci.check_id = at.check_id
         JOIN checks ch ON ch.id = at.check_id
         WHERE at.audit_id = a.id AND cci.checklist_item_id = i.id
-        ORDER BY ch.id LIMIT 1) AS test_code,
-       (SELECT ch.name FROM audit_tests at
+        ORDER BY ch.id) AS test_code,
+       (SELECT TOP (1) ch.name FROM audit_tests at
         JOIN check_checklist_items cci ON cci.check_id = at.check_id
         JOIN checks ch ON ch.id = at.check_id
         WHERE at.audit_id = a.id AND cci.checklist_item_id = i.id
-        ORDER BY ch.id LIMIT 1) AS test_name,
+        ORDER BY ch.id) AS test_name,
        i.question,
        r.response      AS auditor_response,
        r.yes_percent, r.no_percent, r.na_percent,
        -- NULL when there's no linked response at all (standalone CAPA) or
        -- the question was 100% N-A, same "excluded" meaning as elsewhere.
        CASE WHEN r.yes_percent IS NOT NULL AND (r.yes_percent + r.no_percent) > 0
-            THEN ROUND(r.yes_percent * 100.0 / (r.yes_percent + r.no_percent))::int
+            THEN CAST(ROUND(r.yes_percent * 100.0 / (r.yes_percent + r.no_percent), 0) AS INT)
             ELSE NULL END AS performance_percent,
        r.notes         AS auditor_note,
        r.evidence_url  AS auditor_evidence_url,
@@ -161,7 +160,7 @@ export async function saveCapaExecution(input: {
        corrective_action_taken = $3,
        preventive_action_taken = $4,
        completion_note         = $5
-     WHERE id = $1::int`,
+     WHERE id = $1`,
     [
       input.id,
       input.root_cause,
@@ -182,7 +181,7 @@ export async function setCapaRejectionReason(
   reason: string | null
 ): Promise<void> {
   await execute(
-    `UPDATE corrective_actions SET rejection_reason = $2 WHERE id = $1::int`,
+    `UPDATE corrective_actions SET rejection_reason = $2 WHERE id = $1`,
     [id, reason]
   );
 }
@@ -216,8 +215,8 @@ export async function addCapaEvidence(input: {
   const row = await queryOne<{ id: number }>(
     `INSERT INTO capa_evidences
        (capa_id, file_url, file_name, file_mime, file_size, uploaded_by)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4, $5, $6)`,
     [
       input.capa_id,
       input.file_url,
@@ -236,7 +235,9 @@ export async function deleteCapaEvidence(
   evidenceId: number
 ): Promise<number | null> {
   const row = await queryOne<{ capa_id: number }>(
-    `DELETE FROM capa_evidences WHERE id = $1 RETURNING capa_id`,
+    `DECLARE @out TABLE (capa_id INT);
+     DELETE FROM capa_evidences OUTPUT DELETED.capa_id INTO @out WHERE id = $1;
+     SELECT capa_id FROM @out;`,
     [evidenceId]
   );
   return row?.capa_id ?? null;
@@ -315,14 +316,14 @@ export async function listAuditFindings(filters: {
   }
   if (filters.location) {
     params.push(`%${filters.location}%`);
-    cond.push(`a.location ILIKE $${params.length}`);
+    cond.push(`a.location LIKE $${params.length}`);
   }
 
   return queryAll<AuditFinding>(
-    `SELECT
+    `SELECT TOP (500)
        a.id      AS audit_id,
        a.status  AS audit_status,
-       a.score::text AS audit_score,
+       CAST(a.score AS NVARCHAR(20)) AS audit_score,
        a.audit_date,
        b.name    AS audit_brand_name,
        a.department_id AS audit_department_id,
@@ -335,24 +336,27 @@ export async function listAuditFindings(filters: {
        -- resolves it once. First subquery just uses at.check_id so we
        -- don't need to JOIN checks (that was the bug); the other two
        -- do JOIN because they need code + name off checks.
-       (SELECT at.check_id
+       (SELECT TOP (1) at.check_id
         FROM audit_tests at
         JOIN check_checklist_items cci ON cci.check_id = at.check_id
         WHERE at.audit_id = a.id AND cci.checklist_item_id = i.id
-        ORDER BY at.check_id LIMIT 1) AS test_id,
-       (SELECT ch.code FROM audit_tests at
+        ORDER BY at.check_id) AS test_id,
+       (SELECT TOP (1) ch.code FROM audit_tests at
         JOIN check_checklist_items cci ON cci.check_id = at.check_id
         JOIN checks ch ON ch.id = at.check_id
         WHERE at.audit_id = a.id AND cci.checklist_item_id = i.id
-        ORDER BY ch.id LIMIT 1) AS test_code,
-       (SELECT ch.name FROM audit_tests at
+        ORDER BY ch.id) AS test_code,
+       (SELECT TOP (1) ch.name FROM audit_tests at
         JOIN check_checklist_items cci ON cci.check_id = at.check_id
         JOIN checks ch ON ch.id = at.check_id
         WHERE at.audit_id = a.id AND cci.checklist_item_id = i.id
-        ORDER BY ch.id LIMIT 1) AS test_name,
+        ORDER BY ch.id) AS test_name,
        i.id AS item_id, i.code AS item_code, i.question, i.is_critical,
        r.yes_percent, r.no_percent, r.na_percent,
-       ROUND(${AUDIT_RESPONSE_PERFORMANCE_SQL})::int AS performance_percent,
+       -- CASE guard: SQL Server may evaluate this before the WHERE filter.
+       CASE WHEN (r.yes_percent + r.no_percent) > 0
+            THEN CAST(ROUND(${AUDIT_RESPONSE_PERFORMANCE_SQL}, 0) AS INT)
+       END AS performance_percent,
        r.notes        AS auditor_note,
        r.evidence_url, r.evidence_name, r.evidence_mime,
        ca.id          AS capa_id,
@@ -374,8 +378,7 @@ export async function listAuditFindings(filters: {
      LEFT JOIN users         u    ON u.id  = ca.assigned_to
      WHERE ${cond.join(" AND ")}
        AND a.status IN ('submitted','closed')
-     ORDER BY a.id DESC, ctrl.id NULLS LAST, i.sort_order, i.id
-     LIMIT 500`,
+     ORDER BY a.id DESC, CASE WHEN ctrl.id IS NULL THEN 1 ELSE 0 END, ctrl.id, i.sort_order, i.id`,
     params
   );
 }
@@ -386,7 +389,7 @@ export async function listAuditFindings(filters: {
  * Findings whose CAPA already has an assignee are deliberately
  * excluded — bulk assign must never steal work from someone.
  *
- * The control filter uses IS NOT DISTINCT FROM because legacy audits
+ * The control filter is NULL-safe (NULL matches NULL) because legacy audits
  * can have control_id NULL and the UI still shows them under a
  * "No control linked" group that should be bulk-assignable too.
  */
@@ -402,8 +405,8 @@ export async function listBulkAssignableFindings(
      LEFT JOIN corrective_actions ca
        ON ca.source_audit_id = a.id AND ca.source_item_id = i.id
      WHERE ${SHORTFALL_SQL}
-       AND a.id = $1::int
-       AND a.control_id IS NOT DISTINCT FROM $2::int
+       AND a.id = $1
+       AND (a.control_id = $2 OR (a.control_id IS NULL AND $2 IS NULL))
        AND a.status IN ('submitted','closed')
        AND (ca.id IS NULL OR ca.assigned_to IS NULL)
      ORDER BY i.sort_order, i.id`,
@@ -436,24 +439,31 @@ export async function autoCreateCapasForAudit(
     `INSERT INTO corrective_actions
        (code, title, severity, source_audit_id, source_item_id,
         brand_id, department_id, assigned_to, created_by, status)
+     OUTPUT INSERTED.id, INSERTED.assigned_to
      SELECT
-       'CAPA-AUD' || a.id || '-' ||
-         LPAD((base.n + ROW_NUMBER() OVER (ORDER BY i.sort_order, i.id))::text, 3, '0'),
-       LEFT(i.question, 250),
-       CASE WHEN i.is_critical THEN 'critical' ELSE 'medium' END,
-       a.id, i.id, a.brand_id, a.department_id, d.manager_id, $2::int,
-       CASE WHEN d.manager_id IS NOT NULL THEN 'in_progress' ELSE 'open' END
-     FROM audits a
-     JOIN audit_responses r ON r.audit_id = a.id AND ${SHORTFALL_SQL}
-     JOIN checklist_items i ON i.id = r.item_id
-     LEFT JOIN departments d ON d.id = a.department_id
-     CROSS JOIN (SELECT COUNT(*)::int AS n
-                 FROM corrective_actions WHERE source_audit_id = $1) base
-     WHERE a.id = $1
-       AND NOT EXISTS (SELECT 1 FROM corrective_actions ca
-                       WHERE ca.source_audit_id = a.id
-                         AND ca.source_item_id = i.id)
-     RETURNING id, assigned_to`,
+       'CAPA-AUD' + CAST(s.audit_id AS NVARCHAR(20)) + '-' +
+         CASE WHEN LEN(s.seq) < 3 THEN RIGHT(REPLICATE('0', 3) + s.seq, 3)
+              ELSE LEFT(s.seq, 3) END,
+       s.title, s.severity, s.audit_id, s.item_id, s.brand_id, s.department_id,
+       s.manager_id, CAST($2 AS INT), s.status
+     FROM (
+       SELECT
+         a.id AS audit_id, i.id AS item_id, a.brand_id, a.department_id, d.manager_id,
+         CAST(base.n + ROW_NUMBER() OVER (ORDER BY i.sort_order, i.id) AS NVARCHAR(20)) AS seq,
+         LEFT(i.question, 250) AS title,
+         CASE WHEN i.is_critical = 1 THEN 'critical' ELSE 'medium' END AS severity,
+         CASE WHEN d.manager_id IS NOT NULL THEN 'in_progress' ELSE 'open' END AS status
+       FROM audits a
+       JOIN audit_responses r ON r.audit_id = a.id AND ${SHORTFALL_SQL}
+       JOIN checklist_items i ON i.id = r.item_id
+       LEFT JOIN departments d ON d.id = a.department_id
+       CROSS JOIN (SELECT COUNT(*) AS n
+                   FROM corrective_actions WHERE source_audit_id = $1) base
+       WHERE a.id = $1
+         AND NOT EXISTS (SELECT 1 FROM corrective_actions ca
+                         WHERE ca.source_audit_id = a.id
+                           AND ca.source_item_id = i.id)
+     ) s`,
     [auditId, createdBy]
   );
   const assignedManagerIds = [
@@ -532,15 +542,15 @@ export async function upsertCapaFromFinding(input: {
     await execute(
       `UPDATE corrective_actions SET
          title           = $2,
-         severity        = $3::text,
-         brand_id        = COALESCE($4::int, brand_id),
-         department_id   = COALESCE($5::int, department_id),
-         assigned_to     = $6::int,
-         reviewer_id     = $7::int,
-         start_date      = $8::date,
-         due_date        = $9::date,
+         severity        = $3,
+         brand_id        = COALESCE(CAST($4 AS INT), brand_id),
+         department_id   = COALESCE(CAST($5 AS INT), department_id),
+         assigned_to     = $6,
+         reviewer_id     = CAST($7 AS INT),
+         start_date      = CAST($8 AS DATE),
+         due_date        = CAST($9 AS DATE),
          assignment_note = $10
-       WHERE id = $1::int`,
+       WHERE id = $1`,
       [
         existing.id,
         input.title,
@@ -559,7 +569,7 @@ export async function upsertCapaFromFinding(input: {
     await execute(
       `UPDATE corrective_actions
          SET status = 'in_progress'
-       WHERE id = $1::int
+       WHERE id = $1
          AND status = 'open'
          AND assigned_to IS NOT NULL`,
       [existing.id]
@@ -574,7 +584,7 @@ export async function upsertCapaFromFinding(input: {
   // New CAPA. Code = CAPA-AUD<audit>-<seq> where seq is 1-based across
   // CAPAs for the same audit, including the row we're about to insert.
   const seqRow = await queryOne<{ n: number }>(
-    `SELECT COUNT(*)::int + 1 AS n
+    `SELECT COUNT(*) + 1 AS n
        FROM corrective_actions WHERE source_audit_id = $1`,
     [input.audit_id]
   );
@@ -589,10 +599,10 @@ export async function upsertCapaFromFinding(input: {
        (code, title, description, severity, source_audit_id, source_item_id,
         brand_id, department_id, assigned_to, reviewer_id,
         start_date, due_date, assignment_note, created_by, status)
-     VALUES ($1, $2, NULL, $3::text, $4::int, $5::int,
-             $6::int, $7::int, $8::int, $9::int,
-             $10::date, $11::date, $12, $13::int, 'in_progress')
-     RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, NULL, $3, $4, $5,
+             CAST($6 AS INT), CAST($7 AS INT), $8, CAST($9 AS INT),
+             CAST($10 AS DATE), CAST($11 AS DATE), $12, $13, 'in_progress')`,
     [
       code,
       input.title,
@@ -629,8 +639,8 @@ export async function createCapa(input: {
     `INSERT INTO corrective_actions
        (code, title, description, severity, source_audit_id, source_item_id,
         brand_id, department_id, assigned_to, due_date, created_by, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open')
-     RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open')`,
     [
       code,
       input.title,
@@ -663,23 +673,17 @@ export async function transitionCapa(
          status = 'submitted',
          resolution_note = COALESCE($2, resolution_note),
          evidence_url = COALESCE($3, evidence_url),
-         submitted_at = NOW()
+         submitted_at = SYSUTCDATETIME()
        WHERE id = $1`,
       [id, data.resolution_note ?? null, data.evidence_url ?? null]
     );
   } else if (next === "verified" || next === "closed") {
-    // $2 is used twice — once assigned to status (VARCHAR(30)) and once
-    // compared against a TEXT literal ('closed'). Without the explicit
-    // ::text cast Postgres throws 42P08 "inconsistent types deduced for
-    // parameter" because it can't tell whether $2 should be VARCHAR or
-    // TEXT. Casting both sides to text makes the type unambiguous; the
-    // assignment then implicitly coerces back to VARCHAR(30).
     await execute(
       `UPDATE corrective_actions SET
-         status = $2::text,
+         status = $2,
          verified_by = $3,
-         verified_at = COALESCE(verified_at, NOW()),
-         closed_at = CASE WHEN $2::text = 'closed' THEN NOW() ELSE closed_at END
+         verified_at = COALESCE(verified_at, SYSUTCDATETIME()),
+         closed_at = CASE WHEN $2 = 'closed' THEN SYSUTCDATETIME() ELSE closed_at END
        WHERE id = $1`,
       [id, next, data.verified_by ?? null]
     );
@@ -703,7 +707,7 @@ export async function transitionCapa(
 
 export async function pendingCapaCount(): Promise<number> {
   const row = await queryOne<{ n: number }>(
-    `SELECT COUNT(*)::int AS n FROM corrective_actions WHERE status IN ('open','in_progress','submitted')`
+    `SELECT COUNT(*) AS n FROM corrective_actions WHERE status IN ('open','in_progress','submitted')`
   );
   return row?.n ?? 0;
 }

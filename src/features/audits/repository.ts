@@ -19,23 +19,26 @@ const AUDIT_SELECT = `
   a.brand_id, b.name AS brand_name,
   a.department_id, d.name AS department_name,
   a.location, a.auditor_id, u.display_name AS auditor_name,
-  a.audit_date, a.status, a.score, a.max_score, a.critical_failed, a.summary,
+  a.audit_date, a.status, CAST(a.score AS NVARCHAR(20)) AS score, a.max_score, a.critical_failed, a.summary,
   a.submitted_at, a.closed_at, a.created_at, a.updated_at,
   a.policy_id, p.title AS policy_title, p.code AS policy_code,
   -- Every SOP this audit covers (migration 055). policy_id above is still
   -- the first of these, kept for the joins that predate the junction.
+  -- ids and titles are zipped by index, so both use the same order.
   COALESCE(
-    (SELECT array_agg(asop.sop_id ORDER BY sp.title)
-       FROM audit_sops asop JOIN sops sp ON sp.id = asop.sop_id
-       WHERE asop.audit_id = a.id),
-    ARRAY[]::int[]
-  ) AS policy_ids,
+    '[' + (SELECT STRING_AGG(CAST(asop.sop_id AS NVARCHAR(MAX)), ',')
+                  WITHIN GROUP (ORDER BY sp.title, sp.id)
+             FROM audit_sops asop JOIN sops sp ON sp.id = asop.sop_id
+            WHERE asop.audit_id = a.id) + ']',
+    '[]'
+  ) AS policy_ids__json,
   COALESCE(
-    (SELECT array_agg(sp.title ORDER BY sp.title)
-       FROM audit_sops asop JOIN sops sp ON sp.id = asop.sop_id
-       WHERE asop.audit_id = a.id),
-    ARRAY[]::text[]
-  ) AS policy_titles,
+    '[' + (SELECT STRING_AGG(CAST('"' + STRING_ESCAPE(sp.title, 'json') + '"' AS NVARCHAR(MAX)), ',')
+                  WITHIN GROUP (ORDER BY sp.title, sp.id)
+             FROM audit_sops asop JOIN sops sp ON sp.id = asop.sop_id
+            WHERE asop.audit_id = a.id) + ']',
+    '[]'
+  ) AS policy_titles__json,
   a.framework_id, f.name AS framework_name, f.code AS framework_code,
   -- Scope chain (migration 028) + window/assignee (029)
   a.domain_id,  dom.name  AS domain_name,  dom.code  AS domain_code,
@@ -50,7 +53,7 @@ const AUDIT_SELECT = `
   -- How many tests are pinned to this audit (audit_tests rows).
   -- Used by the list page so we can render the scope summary without
   -- a per-row follow-up query.
-  (SELECT COUNT(*)::int FROM audit_tests at WHERE at.audit_id = a.id) AS test_count
+  (SELECT COUNT(*) FROM audit_tests at WHERE at.audit_id = a.id) AS test_count
 FROM audits a
 -- LEFT JOIN templates: template_id is nullable since migration 038. The
 -- previous INNER JOIN would have hidden every audit created from the
@@ -91,8 +94,8 @@ export async function listAudits(filters: {
     params.push(`%${filters.search}%`);
     const i = params.length;
     conditions.push(
-      `(t.name ILIKE $${i} OR a.location ILIKE $${i}
-        OR ctrl.name ILIKE $${i} OR f.name ILIKE $${i} OR dom.name ILIKE $${i})`
+      `(t.name LIKE $${i} OR a.location LIKE $${i}
+        OR ctrl.name LIKE $${i} OR f.name LIKE $${i} OR dom.name LIKE $${i})`
     );
   }
   if (filters.status) {
@@ -110,7 +113,7 @@ export async function listAudits(filters: {
   }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   return queryAll<Audit>(
-    `SELECT ${AUDIT_SELECT} ${where} ORDER BY a.audit_date DESC, a.id DESC LIMIT 100`,
+    `SELECT TOP (100) ${AUDIT_SELECT} ${where} ORDER BY a.audit_date DESC, a.id DESC`,
     params
   );
 }
@@ -147,8 +150,8 @@ export async function addAuditAttachment(input: {
   const row = await queryOne<{ id: number }>(
     `INSERT INTO audit_attachments
        (audit_id, file_url, file_name, file_mime, file_size, uploaded_by)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4, $5, $6)`,
     [
       input.audit_id,
       input.file_url,
@@ -167,7 +170,9 @@ export async function deleteAuditAttachment(
   // Returns the parent audit_id so the action can revalidate the right
   // page without an extra round-trip.
   const row = await queryOne<{ audit_id: number }>(
-    `DELETE FROM audit_attachments WHERE id = $1 RETURNING audit_id`,
+    `DECLARE @out TABLE (audit_id INT);
+     DELETE FROM audit_attachments OUTPUT DELETED.audit_id INTO @out WHERE id = $1;
+     SELECT audit_id FROM @out;`,
     [attachmentId]
   );
   return row?.audit_id ?? null;
@@ -204,7 +209,7 @@ export async function listAuditScopeItems(
      JOIN checklist_templates   t   ON t.id  = i.template_id
      LEFT JOIN audit_responses  r   ON r.audit_id = at.audit_id AND r.item_id = i.id
      WHERE at.audit_id = $1
-     ORDER BY ch.code NULLS LAST, ch.id, t.name, i.sort_order, i.id`,
+     ORDER BY CASE WHEN ch.code IS NULL THEN 1 ELSE 0 END, ch.code, ch.id, t.name, i.sort_order, i.id`,
     [auditId]
   );
 }
@@ -222,10 +227,13 @@ export async function getAuditItems(
   // An audit may carry both. UNION dedupes so an item that satisfies
   // both paths shows up exactly once.
   return queryAll(
+    // i.id is not selected on its own: pg let the later COALESCE(r.id, 0)
+    // win the duplicate "id" key, mssql would return both as an array.
+    // item_id carries i.id.
     `SELECT
-       i.id, i.template_id, i.sort_order, i.question, i.guidance, i.weight, i.is_critical,
+       i.template_id, i.sort_order, i.question, i.guidance, i.weight, i.is_critical,
        COALESCE(r.id, 0)         AS id,
-       $1::int                   AS audit_id,
+       CAST($1 AS INT)           AS audit_id,
        i.id                      AS item_id,
        r.response, r.yes_percent, r.no_percent, r.na_percent,
        r.notes, r.evidence_url, r.evidence_name, r.evidence_mime
@@ -240,7 +248,7 @@ export async function getAuditItems(
        JOIN check_checklist_items cci ON cci.check_id = at.check_id
        WHERE at.audit_id = $1
      )
-     ORDER BY i.template_id NULLS LAST, i.sort_order ASC, i.id ASC`,
+     ORDER BY i.template_id, i.sort_order ASC, i.id ASC`,
     [auditId]
   );
 }
@@ -278,9 +286,15 @@ export async function createAudit(input: {
         policy_id, framework_id, domain_id, control_id,
         start_at, end_at, assigned_to,
         scope_type, auditee_id, reviewer_id, objective, notes, auditee_custom_name)
-     VALUES ($1, $2, $3, $4, $5, COALESCE($6, CURRENT_DATE), $7, $8, $9, $10, $11, $12, $13,
-             $14, $15, $16, $17, $18, $19)
-     RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4, $5, COALESCE(CAST($6 AS DATE), CAST(SYSUTCDATETIME() AS DATE)),
+             $7, $8, $9, $10,
+             -- <input type="datetime-local"> sends "YYYY-MM-DDTHH:MM", which
+             -- SQL Server will not convert without the seconds.
+             CAST(IIF(LEN($11) = 16, $11 + ':00', $11) AS DATETIMEOFFSET(3)),
+             CAST(IIF(LEN($12) = 16, $12 + ':00', $12) AS DATETIMEOFFSET(3)),
+             $13,
+             $14, $15, $16, $17, $18, $19)`,
     [
       input.template_id ?? null,
       input.brand_id ?? null,
@@ -310,11 +324,14 @@ export async function createAudit(input: {
  *  audits row itself is just the first of these, for backward-compat. */
 export async function insertAuditSops(auditId: number, sopIds: number[]): Promise<void> {
   if (sopIds.length === 0) return;
-  const placeholders = sopIds.map((_, i) => `($1, $${i + 2})`).join(", ");
   await execute(
-    `INSERT INTO audit_sops (audit_id, sop_id) VALUES ${placeholders}
-     ON CONFLICT DO NOTHING`,
-    [auditId, ...sopIds]
+    `INSERT INTO audit_sops (audit_id, sop_id)
+     SELECT DISTINCT $1, CAST(j.value AS INT) FROM OPENJSON($2) j
+     WHERE NOT EXISTS (
+       SELECT 1 FROM audit_sops x
+       WHERE x.audit_id = $1 AND x.sop_id = CAST(j.value AS INT)
+     )`,
+    [auditId, JSON.stringify(sopIds)]
   );
 }
 
@@ -362,19 +379,34 @@ export async function upsertResponse(input: {
   }
 
   await execute(
-    `INSERT INTO audit_responses
+    `MERGE INTO audit_responses WITH (HOLDLOCK) AS tgt
+     USING (SELECT
+              CAST($1 AS INT)            AS audit_id,
+              CAST($2 AS INT)            AS item_id,
+              CAST($3 AS NVARCHAR(MAX))  AS response,
+              CAST($9 AS SMALLINT)       AS yes_percent,
+              CAST($10 AS SMALLINT)      AS no_percent,
+              CAST($11 AS SMALLINT)      AS na_percent,
+              CAST($4 AS NVARCHAR(MAX))  AS notes,
+              CAST($5 AS NVARCHAR(MAX))  AS evidence_url,
+              CAST($6 AS NVARCHAR(MAX))  AS evidence_name,
+              CAST($7 AS NVARCHAR(MAX))  AS evidence_mime
+           ) AS src
+        ON tgt.audit_id = src.audit_id AND tgt.item_id = src.item_id
+     WHEN MATCHED THEN UPDATE SET
+       response      = src.response,
+       yes_percent   = src.yes_percent,
+       no_percent    = src.no_percent,
+       na_percent    = src.na_percent,
+       notes         = src.notes,
+       evidence_url  = CASE WHEN $8 = 1 THEN src.evidence_url  ELSE tgt.evidence_url  END,
+       evidence_name = CASE WHEN $8 = 1 THEN src.evidence_name ELSE tgt.evidence_name END,
+       evidence_mime = CASE WHEN $8 = 1 THEN src.evidence_mime ELSE tgt.evidence_mime END
+     WHEN NOT MATCHED THEN INSERT
        (audit_id, item_id, response, yes_percent, no_percent, na_percent,
         notes, evidence_url, evidence_name, evidence_mime)
-     VALUES ($1, $2, $3, $9, $10, $11, $4, $5, $6, $7)
-     ON CONFLICT (audit_id, item_id) DO UPDATE SET
-       response      = EXCLUDED.response,
-       yes_percent   = EXCLUDED.yes_percent,
-       no_percent    = EXCLUDED.no_percent,
-       na_percent    = EXCLUDED.na_percent,
-       notes         = EXCLUDED.notes,
-       evidence_url  = CASE WHEN $8 THEN EXCLUDED.evidence_url  ELSE audit_responses.evidence_url  END,
-       evidence_name = CASE WHEN $8 THEN EXCLUDED.evidence_name ELSE audit_responses.evidence_name END,
-       evidence_mime = CASE WHEN $8 THEN EXCLUDED.evidence_mime ELSE audit_responses.evidence_mime END`,
+     VALUES (src.audit_id, src.item_id, src.response, src.yes_percent, src.no_percent,
+             src.na_percent, src.notes, src.evidence_url, src.evidence_name, src.evidence_mime);`,
     [
       input.audit_id,
       input.item_id,
@@ -412,16 +444,16 @@ export async function computeAuditScore(auditId: number): Promise<{
     // A 100%-N-A question contributes to neither total nor earned weight,
     // same as the old plain "na" response did.
     `SELECT
-       COALESCE(SUM(CASE WHEN ${AUDIT_RESPONSE_ANSWERED_SQL} THEN i.weight ELSE 0 END), 0)::int AS total_weight,
-       COALESCE(SUM(
+       COALESCE(SUM(CASE WHEN ${AUDIT_RESPONSE_ANSWERED_SQL} THEN i.weight ELSE 0 END), 0) AS total_weight,
+       CAST(COALESCE(SUM(
          CASE WHEN ${AUDIT_RESPONSE_ANSWERED_SQL}
               THEN i.weight * ${AUDIT_RESPONSE_PERFORMANCE_SQL} / 100.0
               ELSE 0 END
-       ), 0)::float AS earned_weight,
+       ), 0) AS FLOAT) AS earned_weight,
        COALESCE(SUM(
-         CASE WHEN i.is_critical AND ${AUDIT_RESPONSE_SHORTFALL_SQL}
+         CASE WHEN i.is_critical = 1 AND ${AUDIT_RESPONSE_SHORTFALL_SQL}
               THEN 1 ELSE 0 END
-       ), 0)::int AS critical_failed
+       ), 0) AS critical_failed
      FROM checklist_items i
      LEFT JOIN audit_responses r ON r.item_id = i.id AND r.audit_id = $1
      WHERE i.id IN (
@@ -458,7 +490,7 @@ export async function submitAudit(
        max_score    = $3,
        critical_failed = $4,
        summary      = $5,
-       submitted_at = NOW()
+       submitted_at = SYSUTCDATETIME()
      WHERE id = $1`,
     [id, scorePct, maxScore, criticalFailed, summary]
   );
@@ -479,7 +511,7 @@ export async function submitAudit(
 
 export async function closeAudit(id: number): Promise<void> {
   await execute(
-    `UPDATE audits SET status = 'closed', closed_at = NOW() WHERE id = $1`,
+    `UPDATE audits SET status = 'closed', closed_at = SYSUTCDATETIME() WHERE id = $1`,
     [id]
   );
 }

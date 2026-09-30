@@ -35,7 +35,7 @@ export default async function FrameworkDetailPage({
     `SELECT s.id, s.code, s.title
      FROM sops s
      WHERE s.home_domain_id = (SELECT domain_id FROM frameworks WHERE id = $1)
-     ORDER BY s.code NULLS LAST, s.title`,
+     ORDER BY CASE WHEN s.code IS NULL THEN 1 ELSE 0 END, s.code, s.title`,
     [id]
   );
   const fwDepartments = await queryAll<{ id: number; name: string }>(

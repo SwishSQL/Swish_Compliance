@@ -12,8 +12,8 @@ import { createSop } from "@/features/sops/repository";
 /*  ECS GRC Framework Bundle import                                   */
 /*                                                                    */
 /*  Loads public/seeds/ecs_grc.json (24 frameworks, 49 controls,      */
-/*  147 tests) into the system. Idempotent: ON CONFLICT(code) DO      */
-/*  NOTHING so re-running is safe and counts only NEW inserts.        */
+/*  147 tests) into the system. Idempotent: upserts on code (MERGE),  */
+/*  so re-running is safe and counts only NEW inserts.                */
 /* ────────────────────────────────────────────────────────────────── */
 
 type EcsBundle = {
@@ -82,7 +82,7 @@ export async function importEcsGrcBundleAction(): Promise<void> {
   //    - First import: row is inserted with all fields populated.
   //    - Re-import: only fields that are currently NULL get backfilled
   //      (COALESCE). Anything the user has edited in the UI is preserved.
-  //    The (xmax = 0) trick tells us if this was a fresh insert.
+  //    MERGE's $action tells us if this was a fresh insert.
   let fwInserted = 0;
   let fwExisting = 0;
   const fwIdByCode = new Map<string, number>();
@@ -100,15 +100,24 @@ export async function importEcsGrcBundleAction(): Promise<void> {
     const reviewFrequency = pick(f, "Review Frequency");
 
     const row = await queryOne<{ id: number; inserted: boolean }>(
-      `INSERT INTO frameworks
+      `DECLARE @out TABLE (id INT, merge_action NVARCHAR(10));
+       MERGE INTO frameworks WITH (HOLDLOCK) AS tgt
+       USING (SELECT $1 AS code, $2 AS name, $3 AS description, $4 AS category,
+                     $5 AS is_active, $6 AS reference_source, $7 AS scope,
+                     $8 AS review_frequency) AS src
+         ON tgt.code = src.code
+       WHEN MATCHED THEN UPDATE SET
+         reference_source = COALESCE(tgt.reference_source, src.reference_source),
+         scope            = COALESCE(tgt.scope,            src.scope),
+         review_frequency = COALESCE(tgt.review_frequency, src.review_frequency)
+       WHEN NOT MATCHED THEN INSERT
          (code, name, description, category, is_active,
           reference_source, scope, review_frequency)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       ON CONFLICT (code) DO UPDATE SET
-         reference_source = COALESCE(frameworks.reference_source, EXCLUDED.reference_source),
-         scope            = COALESCE(frameworks.scope,            EXCLUDED.scope),
-         review_frequency = COALESCE(frameworks.review_frequency, EXCLUDED.review_frequency)
-       RETURNING id, (xmax = 0) AS inserted`,
+       VALUES (src.code, src.name, src.description, src.category, src.is_active,
+               src.reference_source, src.scope, src.review_frequency)
+       OUTPUT INSERTED.id, $action INTO @out (id, merge_action);
+       SELECT id, CAST(CASE WHEN merge_action = 'INSERT' THEN 1 ELSE 0 END AS BIT) AS inserted
+       FROM @out`,
       [code, name, description, category, isActive, referenceSource, scope, reviewFrequency]
     );
     if (!row) continue;
@@ -142,19 +151,31 @@ export async function importEcsGrcBundleAction(): Promise<void> {
     const frequency = pick(c, "Frequency");
 
     const row = await queryOne<{ id: number; inserted: boolean }>(
-      `INSERT INTO controls
+      `DECLARE @out TABLE (id INT, merge_action NVARCHAR(10));
+       MERGE INTO controls WITH (HOLDLOCK) AS tgt
+       USING (SELECT $1 AS code, $2 AS name, $3 AS description,
+                     CAST($4 AS INT) AS framework_id, $5 AS category,
+                     $6 AS requirement, $7 AS clause_reference, $8 AS evidence_required,
+                     CAST($9 AS INT) AS risk_weight, $10 AS control_type,
+                     $11 AS frequency) AS src
+         ON tgt.code = src.code
+       WHEN MATCHED THEN UPDATE SET
+         requirement       = COALESCE(tgt.requirement,       src.requirement),
+         clause_reference  = COALESCE(tgt.clause_reference,  src.clause_reference),
+         evidence_required = COALESCE(tgt.evidence_required, src.evidence_required),
+         risk_weight       = COALESCE(tgt.risk_weight,       src.risk_weight),
+         control_type      = COALESCE(tgt.control_type,      src.control_type),
+         frequency         = COALESCE(tgt.frequency,         src.frequency)
+       WHEN NOT MATCHED THEN INSERT
          (code, name, description, framework_id, category, health_status,
           requirement, clause_reference, evidence_required,
           risk_weight, control_type, frequency)
-       VALUES ($1, $2, $3, $4, $5, 'unknown', $6, $7, $8, $9, $10, $11)
-       ON CONFLICT (code) DO UPDATE SET
-         requirement       = COALESCE(controls.requirement,       EXCLUDED.requirement),
-         clause_reference  = COALESCE(controls.clause_reference,  EXCLUDED.clause_reference),
-         evidence_required = COALESCE(controls.evidence_required, EXCLUDED.evidence_required),
-         risk_weight       = COALESCE(controls.risk_weight,       EXCLUDED.risk_weight),
-         control_type      = COALESCE(controls.control_type,      EXCLUDED.control_type),
-         frequency         = COALESCE(controls.frequency,         EXCLUDED.frequency)
-       RETURNING id, (xmax = 0) AS inserted`,
+       VALUES (src.code, src.name, src.description, src.framework_id, src.category, 'unknown',
+               src.requirement, src.clause_reference, src.evidence_required,
+               src.risk_weight, src.control_type, src.frequency)
+       OUTPUT INSERTED.id, $action INTO @out (id, merge_action);
+       SELECT id, CAST(CASE WHEN merge_action = 'INSERT' THEN 1 ELSE 0 END AS BIT) AS inserted
+       FROM @out`,
       [
         code,
         name,
@@ -196,18 +217,29 @@ export async function importEcsGrcBundleAction(): Promise<void> {
     const reviewerRole = pick(t, "Reviewer");
 
     const row = await queryOne<{ inserted: boolean }>(
-      `INSERT INTO checks
+      `DECLARE @out TABLE (merge_action NVARCHAR(10));
+       MERGE INTO checks WITH (HOLDLOCK) AS tgt
+       USING (SELECT $1 AS code, $2 AS name, $3 AS description,
+                     CAST($4 AS INT) AS control_id, $5 AS frequency,
+                     $6 AS procedure_steps, $7 AS evidence_needed, $8 AS method,
+                     $9 AS performer_role, $10 AS reviewer_role) AS src
+         ON tgt.code = src.code
+       WHEN MATCHED THEN UPDATE SET
+         procedure_steps = COALESCE(tgt.procedure_steps, src.procedure_steps),
+         evidence_needed = COALESCE(tgt.evidence_needed, src.evidence_needed),
+         method          = COALESCE(tgt.method,          src.method),
+         performer_role  = COALESCE(tgt.performer_role,  src.performer_role),
+         reviewer_role   = COALESCE(tgt.reviewer_role,   src.reviewer_role)
+       WHEN NOT MATCHED THEN INSERT
          (code, name, description, control_id, frequency,
           procedure_steps, evidence_needed, method,
           performer_role, reviewer_role)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       ON CONFLICT (code) DO UPDATE SET
-         procedure_steps = COALESCE(checks.procedure_steps, EXCLUDED.procedure_steps),
-         evidence_needed = COALESCE(checks.evidence_needed, EXCLUDED.evidence_needed),
-         method          = COALESCE(checks.method,          EXCLUDED.method),
-         performer_role  = COALESCE(checks.performer_role,  EXCLUDED.performer_role),
-         reviewer_role   = COALESCE(checks.reviewer_role,   EXCLUDED.reviewer_role)
-       RETURNING (xmax = 0) AS inserted`,
+       VALUES (src.code, src.name, src.description, src.control_id, src.frequency,
+               src.procedure_steps, src.evidence_needed, src.method,
+               src.performer_role, src.reviewer_role)
+       OUTPUT $action INTO @out (merge_action);
+       SELECT CAST(CASE WHEN merge_action = 'INSERT' THEN 1 ELSE 0 END AS BIT) AS inserted
+       FROM @out`,
       [
         code,
         name,
@@ -271,7 +303,7 @@ const PLAYBOOK_DEPARTMENTS = [
 ];
 
 /**
- * Bulk-create the departments above. Uses ON CONFLICT DO NOTHING so the
+ * Bulk-create the departments above. Skips names that already exist, so the
  * action is idempotent — re-running it is safe and will simply skip the
  * departments that already exist.
  *
@@ -297,12 +329,12 @@ export async function seedPlaybookDepartmentsAction(): Promise<void> {
     return;
   }
 
-  // 2) Insert them in a single statement using UNNEST for speed and atomicity.
+  // 2) Insert them in a single statement for speed and atomicity.
   await execute(
     `INSERT INTO departments (name)
-     SELECT n FROM UNNEST($1::text[]) AS n
-     ON CONFLICT (name) DO NOTHING`,
-    [toCreate]
+     SELECT DISTINCT n.value FROM OPENJSON($1) AS n
+     WHERE NOT EXISTS (SELECT 1 FROM departments d WHERE d.name = n.value)`,
+    [JSON.stringify(toCreate)]
   );
 
   // 3) Audit each one. We re-query to grab the IDs assigned by Postgres.
@@ -342,7 +374,7 @@ export async function importRecruitmentSopAction(): Promise<void> {
   // 1) Guard against duplicates so a double-click doesn't create two rows.
   const SEED_CODE = "HRD-REC-01";
   const existing = await queryOne<{ id: number }>(
-    `SELECT id FROM sops WHERE code = $1 LIMIT 1`,
+    `SELECT TOP (1) id FROM sops WHERE code = $1`,
     [SEED_CODE]
   );
   if (existing) {
@@ -363,10 +395,9 @@ export async function importRecruitmentSopAction(): Promise<void> {
   // 3) Look up the HR department if it exists; otherwise leave null.
   //    We try a few common spellings ("Human Resources", "HR", "People & Culture").
   const dept = await queryOne<{ id: number }>(
-    `SELECT id FROM departments
-     WHERE name ILIKE 'Human Resources' OR name ILIKE 'HR' OR name ILIKE 'People%'
-     ORDER BY is_active DESC, id ASC
-     LIMIT 1`
+    `SELECT TOP (1) id FROM departments
+     WHERE name LIKE 'Human Resources' OR name LIKE 'HR' OR name LIKE 'People%'
+     ORDER BY is_active DESC, id ASC`
   );
 
   // 4) Insert the SOP with the metadata pulled straight from the template.

@@ -65,10 +65,10 @@ export async function updateControlAction(formData: FormData) {
   await execute(
     `UPDATE controls SET
        name = $2, description = $3, category = $4, control_type = $5,
-       frequency = $6, risk_weight = $7::int, owner_user_id = $8::int,
+       frequency = $6, risk_weight = $7, owner_user_id = $8,
        requirement = $9, clause_reference = $10, evidence_required = $11,
        reviewer_prompt = $12
-     WHERE id = $1::int`,
+     WHERE id = $1`,
     [
       parsed.id, parsed.name, parsed.description ?? null,
       parsed.category ?? null, parsed.control_type ?? null,
@@ -126,7 +126,7 @@ export async function unlinkControlAction(formData: FormData) {
 export async function recomputeAllControlsAction() {
   await requireUser();
   const rows = await queryAll<{ id: number }>(
-    `SELECT id FROM controls WHERE is_active`
+    `SELECT id FROM controls WHERE is_active = 1`
   );
   for (const r of rows) {
     await recomputeControlHealth(r.id);

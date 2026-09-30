@@ -81,19 +81,19 @@ export default async function CapaPage({
   // Lookup lists for the filters + modal
   const [brands, departments, assignableUsers, reviewers] = await Promise.all([
     queryAll<{ id: number; name: string }>(
-      `SELECT id, name FROM brands WHERE is_active ORDER BY name`
+      `SELECT id, name FROM brands WHERE is_active = 1 ORDER BY name`
     ),
     queryAll<{ id: number; name: string }>(
-      `SELECT id, name FROM departments WHERE is_active ORDER BY name`
+      `SELECT id, name FROM departments WHERE is_active = 1 ORDER BY name`
     ),
     queryAll<{ id: number; display_name: string; role: string }>(
       `SELECT id, display_name, role FROM users
-       WHERE is_active = TRUE
+       WHERE is_active = 1
        ORDER BY role, display_name`
     ),
     queryAll<{ id: number; display_name: string; role: string }>(
       `SELECT id, display_name, role FROM users
-       WHERE is_active = TRUE
+       WHERE is_active = 1
          AND role IN ('compliance','business_excellence','admin')
        ORDER BY role, display_name`
     ),

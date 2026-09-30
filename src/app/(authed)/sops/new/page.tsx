@@ -13,10 +13,10 @@ export default async function NewSopPage() {
   if (!canCreateSops(user.role)) redirect("/sops");
 
   const brands = await queryAll<{ id: number; name: string }>(
-    `SELECT id, name FROM brands WHERE is_active ORDER BY name`
+    `SELECT id, name FROM brands WHERE is_active = 1 ORDER BY name`
   );
   const departments = await queryAll<{ id: number; name: string }>(
-    `SELECT id, name FROM departments WHERE is_active ORDER BY name`
+    `SELECT id, name FROM departments WHERE is_active = 1 ORDER BY name`
   );
 
   return (

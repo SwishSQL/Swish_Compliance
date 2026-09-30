@@ -93,14 +93,14 @@ export default async function MyWorkPage() {
   /* ── Single aggregated counts query ─────────────────────────── */
   const counts = await queryOne<CountRow>(
     `SELECT
-       (SELECT COUNT(*)::int FROM sops
+       (SELECT COUNT(*) FROM sops
         WHERE status = COALESCE($2, ''))                                                   AS pending_sops_for_me,
        -- CAPA counts widen for the privileged roles (compliance / BE /
        -- admin see everything; DM sees their own department; everyone
        -- else still scopes to "assigned to me"). $3 carries the role,
        -- $4 the dept id so the predicate stays a pure WHERE on the same
        -- aggregate query.
-       (SELECT COUNT(*)::int FROM corrective_actions
+       (SELECT COUNT(*) FROM corrective_actions
         WHERE status IN ('open','in_progress')
           AND (
             $3 IN ('admin','compliance','business_excellence')
@@ -108,8 +108,8 @@ export default async function MyWorkPage() {
             OR ($3 NOT IN ('admin','compliance','business_excellence','department_manager')
                 AND assigned_to = $1)
           ))                                                                                AS my_capas_open,
-       (SELECT COUNT(*)::int FROM corrective_actions
-        WHERE due_date < CURRENT_DATE
+       (SELECT COUNT(*) FROM corrective_actions
+        WHERE due_date < CAST(SYSUTCDATETIME() AS DATE)
           AND status IN ('open','in_progress','submitted')
           AND (
             $3 IN ('admin','compliance','business_excellence')
@@ -119,15 +119,15 @@ export default async function MyWorkPage() {
           ))                                                                                AS my_capas_overdue,
        -- Both creator AND assignee count as "mine" (matches the audit
        -- visibility gate we shipped — anyone who can edit shows up here).
-       (SELECT COUNT(*)::int FROM audits
+       (SELECT COUNT(*) FROM audits
         WHERE (auditor_id = $1 OR assigned_to = $1) AND status = 'in_progress') AS audits_in_progress,
-       (SELECT COUNT(*)::int FROM audits
+       (SELECT COUNT(*) FROM audits
         WHERE (auditor_id = $1 OR assigned_to = $1) AND status = 'submitted')   AS audits_submitted,
-       (SELECT COUNT(*)::int FROM sops
+       (SELECT COUNT(*) FROM sops
         WHERE (created_by = $1 OR owner_id = $1)
           AND status IN ('draft','returned_to_dm','returned_to_compliance','returned_to_be')) AS sops_owned_draft,
-       (SELECT COUNT(*)::int FROM audits
-        WHERE submitted_at::date = CURRENT_DATE AND critical_failed > 0)                   AS failed_critical_today`,
+       (SELECT COUNT(*) FROM audits
+        WHERE CAST(submitted_at AS DATE) = CAST(SYSUTCDATETIME() AS DATE) AND critical_failed > 0)                   AS failed_critical_today`,
     [user.id, pendingStatus, user.role, myDeptId ?? -1]
   );
 
@@ -137,7 +137,7 @@ export default async function MyWorkPage() {
       // Same role-scoped visibility as the counts above. Privileged
       // roles get the full register on My Work; DM sees only their
       // department; everyone else still sees "assigned to me".
-      `SELECT id, code, title, status, due_date, severity
+      `SELECT TOP (6) id, code, title, status, due_date, severity
        FROM corrective_actions
        WHERE status IN ('open','in_progress','submitted')
          AND (
@@ -146,7 +146,7 @@ export default async function MyWorkPage() {
            OR ($2 NOT IN ('admin','compliance','business_excellence','department_manager')
                AND assigned_to = $1)
          )
-       ORDER BY due_date NULLS LAST, id DESC LIMIT 6`,
+       ORDER BY CASE WHEN due_date IS NULL THEN 1 ELSE 0 END, due_date, id DESC`,
       [user.id, user.role, myDeptId ?? -1]
     ),
     queryAll<AuditItem>(
@@ -159,7 +159,7 @@ export default async function MyWorkPage() {
       // listItemsWithResponses so the progress matches the page exactly:
       //   answered = distinct items with response IN (pass,fail,na)
       //   total    = distinct items from template OR via audit_tests links
-      `SELECT a.id,
+      `SELECT TOP (8) a.id,
               t.name   AS template_name,
               dom.name AS domain_name,
               f.code   AS framework_code, f.name AS framework_name,
@@ -167,12 +167,12 @@ export default async function MyWorkPage() {
               b.name   AS brand_name,
               d.name   AS department_name,
               a.location, a.status, a.audit_date,
-              a.score::text AS score,
-              (SELECT COUNT(DISTINCT r.item_id)::int
+              CAST(a.score AS NVARCHAR(20)) AS score,
+              (SELECT COUNT(DISTINCT r.item_id)
                  FROM audit_responses r
                  WHERE r.audit_id = a.id
                    AND r.response IN ('pass','fail','na'))        AS answered_count,
-              (SELECT COUNT(*)::int FROM (
+              (SELECT COUNT(*) FROM (
                  SELECT ci.id FROM checklist_items ci
                  WHERE ci.template_id = a.template_id
                  UNION
@@ -181,8 +181,8 @@ export default async function MyWorkPage() {
                  JOIN check_checklist_items cci ON cci.check_id = at.check_id
                  WHERE at.audit_id = a.id
                ) AS items)                                         AS total_count,
-              (a.auditor_id  = $1) AS is_owner,
-              (a.assigned_to = $1) AS is_assignee
+              CAST(CASE WHEN a.auditor_id = $1 THEN 1 WHEN a.auditor_id IS NULL THEN NULL ELSE 0 END AS BIT) AS is_owner,
+              CAST(CASE WHEN a.assigned_to = $1 THEN 1 WHEN a.assigned_to IS NULL THEN NULL ELSE 0 END AS BIT) AS is_assignee
        FROM audits a
        LEFT JOIN checklist_templates t   ON t.id   = a.template_id
        LEFT JOIN brands       b   ON b.id   = a.brand_id
@@ -192,15 +192,15 @@ export default async function MyWorkPage() {
        LEFT JOIN controls    ctrl ON ctrl.id = a.control_id
        WHERE (a.auditor_id = $1 OR a.assigned_to = $1)
          AND a.status IN ('in_progress','submitted')
-       ORDER BY a.audit_date DESC LIMIT 8`,
+       ORDER BY a.audit_date DESC`,
       [user.id]
     ),
     listSopsAwaitingAck(user.id, user.role, myDeptId, 6),
     queryAll<SopOwned>(
-      `SELECT id, code, title, status FROM sops
+      `SELECT TOP (5) id, code, title, status FROM sops
        WHERE (created_by = $1 OR owner_id = $1)
          AND status IN ('draft','returned_to_dm','returned_to_compliance','returned_to_be')
-       ORDER BY updated_at DESC LIMIT 5`,
+       ORDER BY updated_at DESC`,
       [user.id]
     ),
   ]);

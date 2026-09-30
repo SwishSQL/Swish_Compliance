@@ -16,12 +16,12 @@ export default async function AdminHomePage() {
     audit_events: number;
   }>(
     `SELECT
-       (SELECT COUNT(*)::int FROM users)                       AS users,
-       (SELECT COUNT(*)::int FROM users WHERE is_active)       AS active_users,
-       (SELECT COUNT(*)::int FROM brands WHERE is_active)      AS brands,
-       (SELECT COUNT(*)::int FROM departments WHERE is_active) AS departments,
-       (SELECT COUNT(*)::int FROM org_units WHERE is_active)   AS org_units,
-       (SELECT COUNT(*)::int FROM audit_logs)                  AS audit_events`
+       (SELECT COUNT(*) FROM users)                           AS users,
+       (SELECT COUNT(*) FROM users WHERE is_active = 1)       AS active_users,
+       (SELECT COUNT(*) FROM brands WHERE is_active = 1)      AS brands,
+       (SELECT COUNT(*) FROM departments WHERE is_active = 1) AS departments,
+       (SELECT COUNT(*) FROM org_units WHERE is_active = 1)   AS org_units,
+       (SELECT COUNT(*) FROM audit_logs)                      AS audit_events`
   );
 
   // Users, Brands, Departments, Org Units and Config all live under one
@@ -53,7 +53,7 @@ export default async function AdminHomePage() {
 
   // Is the Recruitment SOP template already in the system?
   const seededSop = await queryOne<{ id: number }>(
-    `SELECT id FROM sops WHERE code = 'HRD-REC-01' LIMIT 1`
+    `SELECT TOP (1) id FROM sops WHERE code = 'HRD-REC-01'`
   );
 
   return (

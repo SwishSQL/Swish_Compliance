@@ -66,7 +66,7 @@ export default async function SopDetailPage({
      FROM frameworks f
      JOIN sops s ON s.home_domain_id = f.domain_id
      WHERE s.id = $1
-     ORDER BY f.code NULLS LAST, f.name`,
+     ORDER BY f.code, f.name`,
     [id]
   );
 

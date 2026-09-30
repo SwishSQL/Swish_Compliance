@@ -35,14 +35,14 @@ export async function authenticate(
   password: string
 ): Promise<SessionUser | null> {
   const user = await queryOne<DbUser>(
-    `SELECT id, email, password_hash, display_name, role, brand_id, department_id, is_active
-     FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+    `SELECT TOP (1) id, email, password_hash, display_name, role, brand_id, department_id, is_active
+     FROM users WHERE LOWER(email) = LOWER($1)`,
     [email]
   );
   if (!user || !user.is_active) return null;
   const ok = bcrypt.compareSync(password, user.password_hash);
   if (!ok) return null;
-  await queryOne(`UPDATE users SET last_login_at = NOW() WHERE id = $1`, [user.id]);
+  await queryOne(`UPDATE users SET last_login_at = SYSUTCDATETIME() WHERE id = $1`, [user.id]);
   return {
     id: user.id,
     email: user.email,

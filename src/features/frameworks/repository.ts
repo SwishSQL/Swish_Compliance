@@ -9,8 +9,8 @@ const FW_SELECT = `
   f.created_at, f.updated_at,
   f.reference_source, f.scope, f.review_frequency,
   f.owner_label, f.audit_frequency,
-  (SELECT COUNT(*)::int FROM controls c WHERE c.framework_id = f.id)                          AS control_count,
-  (SELECT COUNT(*)::int FROM controls c WHERE c.framework_id = f.id AND c.is_active)          AS active_control_count
+  (SELECT COUNT(*) FROM controls c WHERE c.framework_id = f.id)                          AS control_count,
+  (SELECT COUNT(*) FROM controls c WHERE c.framework_id = f.id AND c.is_active = 1)      AS active_control_count
 FROM frameworks f
 LEFT JOIN users u_a ON u_a.id = f.activated_by
 LEFT JOIN users u_o ON u_o.id = f.owner_user_id
@@ -31,11 +31,11 @@ export async function setFrameworkActive(
 ): Promise<void> {
   if (active) {
     await execute(
-      `UPDATE frameworks SET is_active = TRUE, activated_by = $2, activated_at = NOW() WHERE id = $1`,
+      `UPDATE frameworks SET is_active = 1, activated_by = $2, activated_at = SYSUTCDATETIME() WHERE id = $1`,
       [id, userId]
     );
   } else {
-    await execute(`UPDATE frameworks SET is_active = FALSE WHERE id = $1`, [id]);
+    await execute(`UPDATE frameworks SET is_active = 0 WHERE id = $1`, [id]);
   }
 }
 
@@ -65,11 +65,11 @@ export async function createFramework(input: {
        (code, name, description, category, domain_id, owner_user_id,
         owner_label, audit_frequency, is_active, activated_by, activated_at,
         sop_id, department_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::boolean,
-             CASE WHEN $9::boolean THEN $10::integer ELSE NULL END,
-             CASE WHEN $9::boolean THEN NOW() ELSE NULL END,
-             $11, $12)
-     RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+             CASE WHEN $9 = 1 THEN $10 ELSE NULL END,
+             CASE WHEN $9 = 1 THEN SYSUTCDATETIME() ELSE NULL END,
+             $11, $12)`,
     [
       input.code,
       input.name,

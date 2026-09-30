@@ -64,12 +64,11 @@ export default async function ControlDetailPage({
     last_status: string | null;
     question_count: number;
   }>(
-    `SELECT ch.id, ch.code, ch.name, ch.description, ch.frequency, ch.last_status,
-       (SELECT COUNT(*)::int FROM check_checklist_items cci WHERE cci.check_id = ch.id) AS question_count
+    `SELECT TOP (100) ch.id, ch.code, ch.name, ch.description, ch.frequency, ch.last_status,
+       (SELECT COUNT(*) FROM check_checklist_items cci WHERE cci.check_id = ch.id) AS question_count
      FROM checks ch
      WHERE ch.control_id = $1
-     ORDER BY ch.code NULLS LAST, ch.name
-     LIMIT 100`,
+     ORDER BY CASE WHEN ch.code IS NULL THEN 1 ELSE 0 END, ch.code, ch.name`,
     [id]
   );
 
@@ -80,36 +79,36 @@ export default async function ControlDetailPage({
     await Promise.all([
       queryAll<{ id: number; display_name: string }>(
         `SELECT id, display_name FROM users
-         WHERE is_active AND role = 'auditor'
+         WHERE is_active = 1 AND role = 'auditor'
          ORDER BY display_name`
       ),
       queryAll<{ id: number; display_name: string }>(
         `SELECT id, display_name FROM users
-         WHERE is_active AND role = 'department_manager'
+         WHERE is_active = 1 AND role = 'department_manager'
          ORDER BY display_name`
       ),
       queryAll<{ id: number; name: string }>(
-        `SELECT id, name FROM brands WHERE is_active ORDER BY name`
+        `SELECT id, name FROM brands WHERE is_active = 1 ORDER BY name`
       ),
       queryAll<{ id: number; name: string }>(
-        `SELECT id, name FROM departments WHERE is_active ORDER BY name`
+        `SELECT id, name FROM departments WHERE is_active = 1 ORDER BY name`
       ),
       listOrgUnitOptions(),
     ]);
 
   const sops = canEdit
     ? await queryAll<{ id: number; title: string }>(
-        `SELECT id, title FROM sops WHERE id NOT IN (
+        `SELECT TOP (50) id, title FROM sops WHERE id NOT IN (
            SELECT entity_id FROM control_links WHERE control_id = $1 AND entity_type = 'sop'
-         ) ORDER BY title LIMIT 50`,
+         ) ORDER BY title`,
         [id]
       )
     : [];
   const checks = canEdit
     ? await queryAll<{ id: number; name: string }>(
-        `SELECT id, name FROM checks WHERE id NOT IN (
+        `SELECT TOP (50) id, name FROM checks WHERE id NOT IN (
            SELECT entity_id FROM control_links WHERE control_id = $1 AND entity_type = 'check'
-         ) ORDER BY name LIMIT 50`,
+         ) ORDER BY name`,
         [id]
       )
     : [];

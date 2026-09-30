@@ -20,7 +20,7 @@ export default async function NewControlPage({
     `SELECT id, name, code FROM frameworks ORDER BY is_active DESC, name`
   );
   const users = await queryAll<{ id: number; display_name: string }>(
-    `SELECT id, display_name FROM users WHERE is_active ORDER BY display_name`
+    `SELECT id, display_name FROM users WHERE is_active = 1 ORDER BY display_name`
   );
   const categories = await listOptions("control_category", true);
 

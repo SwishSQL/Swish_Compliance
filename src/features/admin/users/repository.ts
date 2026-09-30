@@ -22,41 +22,47 @@ export type UserRow = {
 const USER_SELECT = `
   u.id, u.email, u.display_name, u.role, u.is_active, u.created_at, u.last_login_at,
   COALESCE(
-    (SELECT array_agg(b.id ORDER BY b.name)
-       FROM user_brands ub JOIN brands b ON b.id = ub.brand_id
-       WHERE ub.user_id = u.id),
-    ARRAY[]::int[]
-  ) AS brand_ids,
+    '[' + (SELECT STRING_AGG(CAST(b.id AS NVARCHAR(20)), ',')
+             WITHIN GROUP (ORDER BY b.name, b.id)
+           FROM user_brands ub JOIN brands b ON b.id = ub.brand_id
+           WHERE ub.user_id = u.id) + ']',
+    '[]'
+  ) AS brand_ids__json,
   COALESCE(
-    (SELECT array_agg(b.name ORDER BY b.name)
-       FROM user_brands ub JOIN brands b ON b.id = ub.brand_id
-       WHERE ub.user_id = u.id),
-    ARRAY[]::text[]
-  ) AS brand_names,
+    '[' + (SELECT STRING_AGG('"' + STRING_ESCAPE(CAST(b.name AS NVARCHAR(MAX)), 'json') + '"', ',')
+             WITHIN GROUP (ORDER BY b.name, b.id)
+           FROM user_brands ub JOIN brands b ON b.id = ub.brand_id
+           WHERE ub.user_id = u.id) + ']',
+    '[]'
+  ) AS brand_names__json,
   COALESCE(
-    (SELECT array_agg(d.id ORDER BY d.name)
-       FROM user_departments ud JOIN departments d ON d.id = ud.department_id
-       WHERE ud.user_id = u.id),
-    ARRAY[]::int[]
-  ) AS department_ids,
+    '[' + (SELECT STRING_AGG(CAST(d.id AS NVARCHAR(20)), ',')
+             WITHIN GROUP (ORDER BY d.name, d.id)
+           FROM user_departments ud JOIN departments d ON d.id = ud.department_id
+           WHERE ud.user_id = u.id) + ']',
+    '[]'
+  ) AS department_ids__json,
   COALESCE(
-    (SELECT array_agg(d.name ORDER BY d.name)
-       FROM user_departments ud JOIN departments d ON d.id = ud.department_id
-       WHERE ud.user_id = u.id),
-    ARRAY[]::text[]
-  ) AS department_names,
+    '[' + (SELECT STRING_AGG('"' + STRING_ESCAPE(CAST(d.name AS NVARCHAR(MAX)), 'json') + '"', ',')
+             WITHIN GROUP (ORDER BY d.name, d.id)
+           FROM user_departments ud JOIN departments d ON d.id = ud.department_id
+           WHERE ud.user_id = u.id) + ']',
+    '[]'
+  ) AS department_names__json,
   COALESCE(
-    (SELECT array_agg(dm.id ORDER BY dm.name)
-       FROM user_domains udm JOIN domains dm ON dm.id = udm.domain_id
-       WHERE udm.user_id = u.id),
-    ARRAY[]::int[]
-  ) AS domain_ids,
+    '[' + (SELECT STRING_AGG(CAST(dm.id AS NVARCHAR(20)), ',')
+             WITHIN GROUP (ORDER BY dm.name, dm.id)
+           FROM user_domains udm JOIN domains dm ON dm.id = udm.domain_id
+           WHERE udm.user_id = u.id) + ']',
+    '[]'
+  ) AS domain_ids__json,
   COALESCE(
-    (SELECT array_agg(dm.name ORDER BY dm.name)
-       FROM user_domains udm JOIN domains dm ON dm.id = udm.domain_id
-       WHERE udm.user_id = u.id),
-    ARRAY[]::text[]
-  ) AS domain_names
+    '[' + (SELECT STRING_AGG('"' + STRING_ESCAPE(CAST(dm.name AS NVARCHAR(MAX)), 'json') + '"', ',')
+             WITHIN GROUP (ORDER BY dm.name, dm.id)
+           FROM user_domains udm JOIN domains dm ON dm.id = udm.domain_id
+           WHERE udm.user_id = u.id) + ']',
+    '[]'
+  ) AS domain_names__json
 FROM users u
 `;
 
@@ -64,7 +70,7 @@ export async function listUsers(search?: string): Promise<UserRow[]> {
   if (search && search.trim()) {
     return queryAll<UserRow>(
       `SELECT ${USER_SELECT}
-       WHERE u.email ILIKE $1 OR u.display_name ILIKE $1
+       WHERE u.email LIKE $1 OR u.display_name LIKE $1
        ORDER BY u.created_at DESC`,
       [`%${search.trim()}%`]
     );
@@ -95,8 +101,8 @@ export async function createUser(input: CreateUserInput): Promise<number> {
 
   const row = await queryOne<{ id: number }>(
     `INSERT INTO users (email, password_hash, display_name, role, brand_id, department_id, is_active)
-     VALUES ($1, $2, $3, $4, $5, $6, TRUE)
-     RETURNING id`,
+     OUTPUT INSERTED.id
+     VALUES ($1, $2, $3, $4, $5, $6, 1)`,
     [
       input.email.toLowerCase(),
       hash,
@@ -135,7 +141,7 @@ export async function updateUser(input: UpdateUserInput): Promise<void> {
        role          = COALESCE($3, role),
        brand_id      = $4,
        department_id = $5,
-       is_active     = COALESCE($6, is_active)
+       is_active     = COALESCE(CAST($6 AS BIT), is_active)
      WHERE id = $1`,
     [
       input.id,
@@ -208,7 +214,8 @@ export async function resetUserPassword(id: number, newPassword: string): Promis
 
 export async function emailExists(email: string): Promise<boolean> {
   const row = await queryOne<{ exists: boolean }>(
-    `SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(email) = LOWER($1)) AS exists`,
+    `SELECT CAST(CASE WHEN EXISTS(SELECT 1 FROM users WHERE LOWER(email) = LOWER($1))
+                 THEN 1 ELSE 0 END AS BIT) AS [exists]`,
     [email]
   );
   return !!row?.exists;

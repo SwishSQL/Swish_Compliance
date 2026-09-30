@@ -441,7 +441,7 @@ export async function deleteEntityWithBackup(
     // rather than letting a raw Postgres constraint violation bubble up.
     if (type === "checklist_template") {
       const inUse = await client.query<{ n: number }>(
-        `SELECT COUNT(*)::int AS n FROM audits WHERE template_id = $1`,
+        `SELECT COUNT(*) AS n FROM audits WHERE template_id = $1`,
         [id]
       );
       if (inUse.rows[0].n > 0) {
@@ -489,9 +489,9 @@ export async function deleteEntityWithBackup(
  *  reassurance that a snapshot exists. */
 export async function getRecentDeletion(type: EntityType, id: number) {
   return queryOne<{ deleted_at: string; deleted_by: number | null }>(
-    `SELECT deleted_at, deleted_by FROM deleted_records
+    `SELECT TOP (1) deleted_at, deleted_by FROM deleted_records
      WHERE entity_type = $1 AND entity_id = $2
-     ORDER BY deleted_at DESC LIMIT 1`,
+     ORDER BY deleted_at DESC`,
     [type, id]
   );
 }

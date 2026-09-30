@@ -24,7 +24,7 @@ export default async function NewAuditPage() {
   const [allBrands, allDepartments, policies, assignees, reviewerUsers, fullGraph] =
     await Promise.all([
       queryAll<{ id: number; name: string }>(
-        `SELECT id, name FROM brands WHERE is_active ORDER BY name`
+        `SELECT id, name FROM brands WHERE is_active = 1 ORDER BY name`
       ),
       // Only departments that have a manager set are shown further down,
       // but we need every active department + its manager here so the
@@ -39,7 +39,7 @@ export default async function NewAuditPage() {
         `SELECT d.id, d.name, d.manager_id, u.display_name AS manager_name
          FROM departments d
          LEFT JOIN users u ON u.id = d.manager_id
-         WHERE d.is_active ORDER BY d.name`
+         WHERE d.is_active = 1 ORDER BY d.name`
       ),
       // Policies = approved SOPs. An audit is always run against a
       // published policy, never a draft.
@@ -49,11 +49,10 @@ export default async function NewAuditPage() {
         title: string;
         department_id: number | null;
       }>(
-        `SELECT id, code, title, department_id
+        `SELECT TOP (500) id, code, title, department_id
          FROM sops
          WHERE status = 'approved'
-         ORDER BY code NULLS LAST, title
-         LIMIT 500`
+         ORDER BY CASE WHEN code IS NULL THEN 1 ELSE 0 END, code, title`
       ),
       // Assigned Auditor is limited to the roles that actually conduct
       // audits (user spec 2026-08-19) — auditors plus the two reviewer
@@ -61,7 +60,7 @@ export default async function NewAuditPage() {
       queryAll<{ id: number; display_name: string; role: string }>(
         `SELECT id, display_name, role
          FROM users
-         WHERE is_active = TRUE
+         WHERE is_active = 1
            AND role IN ('auditor', 'compliance', 'business_excellence')
          ORDER BY role, display_name`
       ),
@@ -70,7 +69,7 @@ export default async function NewAuditPage() {
       queryAll<{ id: number; display_name: string; role: string }>(
         `SELECT id, display_name, role
          FROM users
-         WHERE is_active = TRUE
+         WHERE is_active = 1
          ORDER BY role, display_name`
       ),
       loadScopeGraph(),

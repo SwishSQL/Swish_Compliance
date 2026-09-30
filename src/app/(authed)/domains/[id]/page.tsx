@@ -26,7 +26,7 @@ export default async function DomainDetailPage({
   // their departments — not every SOP loosely linked via controls.
   const sops = await queryAll<{ id: number; code: string | null; title: string }>(
     `SELECT id, code, title FROM sops WHERE home_domain_id = $1
-     ORDER BY code NULLS LAST, title`,
+     ORDER BY CASE WHEN code IS NULL THEN 1 ELSE 0 END, code, title`,
     [id]
   );
   const departments = await queryAll<{ id: number; name: string }>(
