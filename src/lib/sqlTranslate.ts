@@ -43,6 +43,9 @@ const ANY_PATTERN =
 const ALL_PATTERN =
   /^(?:<>|!=)\s*ALL\s*\(\s*\$(\d+)\s*(?:::\s*[A-Za-z_][A-Za-z0-9_]*\s*\[\s*\]\s*)?\)/i;
 
+/** Arrays longer than this are passed as one JSON parameter (see listParams). */
+export const MAX_EXPANDED_LIST = 500;
+
 function isDigit(ch: string | undefined): boolean {
   return ch !== undefined && ch >= "0" && ch <= "9";
 }
@@ -98,23 +101,22 @@ export function translateQuery(text: string, values: unknown[] = []): Translated
       );
     }
 
+    const op = negated ? "NOT IN" : "IN";
+
     if (value.length === 0) {
-      // Postgres: `x = ANY('{}')` is FALSE, so the row is dropped.
-      // `x IN (NULL)` evaluates to UNKNOWN, which a WHERE clause also
-      // drops — same observable result, and NULL is type-compatible with
-      // any column so this can't raise a conversion error.
-      if (negated) {
-        // `x <> ALL('{}')` is TRUE in Postgres (nothing to conflict with),
-        // but `x NOT IN (NULL)` is UNKNOWN — the opposite. There is no
-        // safe left-operand-agnostic rewrite, so refuse rather than
-        // silently invert the caller's filter. No src/ query hits this.
-        throw new Error(
-          `Parameter $${index} is an empty array used with ALL(...). ` +
-            `That cannot be translated without changing the query's meaning ` +
-            `— guard the empty case in the caller. Query: ${text}`
-        );
+      // An empty subquery gives exactly Postgres's answers, NOT included:
+      // `x = ANY('{}')` is FALSE and `x <> ALL('{}')` is TRUE, even for a
+      // NULL x. (`IN (NULL)` would be UNKNOWN, which flips under NOT.)
+      return `${op} (SELECT NULL WHERE 1 = 0)`;
+    }
+
+    if (value.length > MAX_EXPANDED_LIST) {
+      // SQL Server caps a request at 2,100 parameters. Past a few hundred
+      // elements, ship the list as one JSON parameter instead.
+      if (!emitted.has(index)) {
+        emitted.set(index, [{ name: `p${index}`, value: JSON.stringify(value) }]);
       }
-      return "IN (NULL)";
+      return `${op} (SELECT value FROM OPENJSON(@p${index}))`;
     }
 
     if (!emitted.has(index)) {
@@ -124,7 +126,7 @@ export function translateQuery(text: string, values: unknown[] = []): Translated
       );
     }
     const names = emitted.get(index)!.map((p) => `@${p.name}`);
-    return `${negated ? "NOT IN" : "IN"} (${names.join(", ")})`;
+    return `${op} (${names.join(", ")})`;
   }
 
   let i = 0;

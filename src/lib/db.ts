@@ -157,13 +157,56 @@ async function run(
   return request.query(translated.text);
 }
 
+/**
+ * Column-alias suffix that marks a JSON value to decode on the way out.
+ *
+ * `pg` returned PostgreSQL arrays (array_agg) as JS arrays and JSONB as
+ * parsed objects; SQL Server has neither type, so such values are built as
+ * JSON text in the query and aliased `<name>__json`. Rows come back with
+ * that column parsed and renamed to `<name>`, so callers see exactly the
+ * shape `pg` gave them. Example:
+ *
+ *   COALESCE('[' + STRING_AGG(CAST(x.id AS NVARCHAR(20)), ',') + ']', '[]')
+ *     AS department_ids__json          -- row.department_ids: number[]
+ */
+const JSON_SUFFIX = "__json";
+
+function decodeRows<T>(rows: Record<string, unknown>[] | undefined): T[] {
+  if (!rows) return [];
+  if (rows.length === 0) return rows as unknown as T[];
+  const jsonKeys = Object.keys(rows[0]).filter((k) => k.endsWith(JSON_SUFFIX));
+  if (jsonKeys.length === 0) return rows as unknown as T[];
+  return rows.map((row) => {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(row)) {
+      if (!key.endsWith(JSON_SUFFIX)) {
+        out[key] = value;
+        continue;
+      }
+      const name = key.slice(0, -JSON_SUFFIX.length);
+      if (value === null || value === undefined) {
+        out[name] = null;
+      } else if (typeof value === "string") {
+        try {
+          out[name] = JSON.parse(value);
+        } catch {
+          throw new Error(`Column "${key}" is not valid JSON: ${value.slice(0, 200)}`);
+        }
+      } else {
+        out[name] = value;
+      }
+    }
+    return out;
+  }) as unknown as T[];
+}
+
 /** Run a parameterized query and return all rows. */
 export async function queryAll<T = Record<string, unknown>>(
   text: string,
   params: unknown[] = []
 ): Promise<T[]> {
   const res = await run(text, params);
-  return res.recordset as unknown as T[];
+  return decodeRows<T>(res.recordset);
 }
 
 /** Run a parameterized query and return the first row (or undefined). */
@@ -172,7 +215,7 @@ export async function queryOne<T = Record<string, unknown>>(
   params: unknown[] = []
 ): Promise<T | undefined> {
   const res = await run(text, params);
-  return (res.recordset?.[0] as unknown as T) ?? undefined;
+  return decodeRows<T>(res.recordset)[0];
 }
 
 /** Run a write query and return rowsAffected. */
@@ -220,7 +263,7 @@ export async function withTransaction<T>(
     async query<R = Record<string, unknown>>(text: string, params: unknown[] = []) {
       const res = await run(text, params, new sql.Request(transaction));
       return {
-        rows: (res.recordset ?? []) as unknown as R[],
+        rows: decodeRows<R>(res.recordset),
         rowCount: (res.rowsAffected ?? []).reduce((sum, n) => sum + n, 0),
       };
     },

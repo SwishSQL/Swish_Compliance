@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { translateQuery } from "../src/lib/sqlTranslate.ts";
+import { translateQuery, MAX_EXPANDED_LIST } from "../src/lib/sqlTranslate.ts";
 
 /* ─── Plain placeholders ─────────────────────────────────────────── */
 
@@ -134,8 +134,24 @@ test("expands != ALL($n) into NOT IN", () => {
 
 test("an empty array in ANY matches nothing, as Postgres does", () => {
   const q = translateQuery("WHERE department_id = ANY($1)", [[]]);
-  assert.equal(q.text, "WHERE department_id IN (NULL)");
+  assert.equal(q.text, "WHERE department_id IN (SELECT NULL WHERE 1 = 0)");
   assert.deepEqual(q.params, []);
+});
+
+test("an empty array in ALL matches everything, as Postgres does", () => {
+  const q = translateQuery("WHERE id <> ALL($1)", [[]]);
+  assert.equal(q.text, "WHERE id NOT IN (SELECT NULL WHERE 1 = 0)");
+  assert.deepEqual(q.params, []);
+});
+
+test("a very large array is passed as one JSON parameter", () => {
+  const ids = Array.from({ length: MAX_EXPANDED_LIST + 1 }, (_, i) => i + 1);
+  const q = translateQuery("WHERE id = ANY($1) AND x = $2", [ids, "z"]);
+  assert.equal(q.text, "WHERE id IN (SELECT value FROM OPENJSON(@p1)) AND x = @p2");
+  assert.deepEqual(q.params, [
+    { name: "p1", value: JSON.stringify(ids) },
+    { name: "p2", value: "z" },
+  ]);
 });
 
 test("mixes an array parameter with scalar ones correctly", () => {
@@ -168,13 +184,6 @@ test("throws when ANY receives a non-array", () => {
   assert.throws(
     () => translateQuery("WHERE id = ANY($1)", [5]),
     /not an array/i
-  );
-});
-
-test("throws on an empty array with ALL, which cannot be translated safely", () => {
-  assert.throws(
-    () => translateQuery("WHERE id <> ALL($1)", [[]]),
-    /empty array used with ALL/i
   );
 });
 
