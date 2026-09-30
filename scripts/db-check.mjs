@@ -103,7 +103,8 @@ try {
   await check(pool, "a long string (>4000 chars) is not truncated", async () => {
     const long = "x".repeat(50_000);
     const r = await run(pool, "SELECT LEN($1) AS n", [long]);
-    if (r.recordset[0].n !== 50_000) throw new Error(`got length ${r.recordset[0].n}`);
+    // LEN() of a long NVARCHAR(MAX) is a BIGINT, which the driver returns as text.
+    if (Number(r.recordset[0].n) !== 50_000) throw new Error(`got length ${r.recordset[0].n}`);
   });
 
   await check(pool, "the same placeholder used twice binds once", async () => {

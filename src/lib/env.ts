@@ -6,6 +6,11 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   ADMIN_EMAIL: z.string().email().optional(),
   ADMIN_PASSWORD: z.string().optional(),
+  // The session cookie is Secure (HTTPS-only) in production. Set this to
+  // "false" only when the app is served over plain HTTP on a trusted
+  // intranet; browsers silently drop a Secure cookie on http://, which
+  // looks like "login succeeds but I'm sent back to the login page".
+  SESSION_COOKIE_SECURE: z.enum(["true", "false"]).optional(),
 });
 
 function parseEnv() {

@@ -84,7 +84,10 @@ export async function createSession(user: SessionUser): Promise<void> {
   jar.set(COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: env.NODE_ENV === "production",
+    secure:
+      env.SESSION_COOKIE_SECURE !== undefined
+        ? env.SESSION_COOKIE_SECURE === "true"
+        : env.NODE_ENV === "production",
     path: "/",
     maxAge: COOKIE_MAX_AGE,
   });
