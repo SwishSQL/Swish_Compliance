@@ -80,7 +80,13 @@ setup / `db:migrate`.
 Pull the new version, `npm ci`, `npm run build`, restart. Any new
 `sql/00N_*.sql` files are applied automatically on that start.
 
-## 5. First steps after login
+## 5. Move the existing data (only when replacing the old PostgreSQL system)
+
+Stop the app, then follow [MIGRATE-FROM-POSTGRES.md](MIGRATE-FROM-POSTGRES.md): one command
+copies every table, keeps all ids and passwords, and verifies each cell before
+keeping anything. Then start the app again. Skip this step for a fresh install.
+
+## 6. First steps after login
 
 1. Change the admin password (Account page).
 2. Administration → Users: create users and give them a role and department(s).

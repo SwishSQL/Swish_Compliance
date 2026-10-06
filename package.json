@@ -12,7 +12,8 @@
     "lint": "next lint",
     "test": "node --test \"tests/*.test.ts\" \"tests/*.test.mjs\"",
     "db:check": "node scripts/db-check.mjs",
-    "db:migrate": "node scripts/migrate.mjs"
+    "db:migrate": "node scripts/migrate.mjs",
+    "migrate:from-postgres": "node scripts/migrate-from-postgres.mjs"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.0.0",
@@ -25,6 +26,7 @@
     "jose": "^5.10.0",
     "mssql": "^11.0.1",
     "next": "^15.2.4",
+    "pg": "^8.23.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwindcss": "^4.0.0",

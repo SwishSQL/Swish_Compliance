@@ -218,9 +218,9 @@ async function seedAdmin(pool, log) {
  * Full bootstrap. `databaseUrl` is the same DATABASE_URL the app uses.
  * Throws on any failure (callers decide whether that is fatal).
  *
- * @param {{ databaseUrl: string, sqlDir?: string, log?: (msg: string) => void }} opts
+ * @param {{ databaseUrl: string, sqlDir?: string, log?: (msg: string) => void, seedAdmin?: boolean }} opts
  */
-export async function runMigrations({ databaseUrl, sqlDir, log = console.log }) {
+export async function runMigrations({ databaseUrl, sqlDir, log = console.log, seedAdmin: seedFirstAdmin = true }) {
   const config = buildConfig(databaseUrl);
   await ensureDatabase(config, log);
 
@@ -253,7 +253,7 @@ export async function runMigrations({ databaseUrl, sqlDir, log = console.log }) 
     }
 
     const n = await applyMigrations(pool, sqlDir ?? path.resolve(process.cwd(), "sql"), log);
-    const seeded = await seedAdmin(pool, log);
+    const seeded = seedFirstAdmin ? await seedAdmin(pool, log) : false;
     if (n === 0 && !seeded) log("[db] schema is up to date.");
 
     await pool
