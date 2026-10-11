@@ -1,7 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { jwtVerify } from "jose";
 
-const PUBLIC_PATHS = ["/login", "/api/auth/login"];
+// /api/sso/handoff is the SWiSH World single sign-on entry point: it verifies
+// its own signed token and creates the session cookie itself.
+const PUBLIC_PATHS = ["/login", "/api/auth/login", "/api/sso/handoff"];
 const SESSION_COOKIE = "swish_session";
 
 const secret = new TextEncoder().encode(process.env.JWT_SECRET || "");

@@ -1,6 +1,31 @@
 import LoginForm from "./LoginForm";
 
-export default function LoginPage() {
+/**
+ * Reasons the SWiSH World single sign-on handoff (/api/sso/handoff) sends
+ * people back here with, so the page can say why instead of showing a bare
+ * login form.
+ */
+const SSO_MESSAGES: Record<string, (email: string) => string> = {
+  "no-user": (email) =>
+    `SWiSH World signed you in as ${email || "your SWiSH World account"}, but Compliance has no user with that e-mail. Ask IT to create your Compliance account with the same e-mail, then open Compliance from SWiSH World again.`,
+  disabled: (email) =>
+    `Your Compliance account${email ? ` (${email})` : ""} is deactivated. Ask IT to re-enable it.`,
+  ambiguous: (email) =>
+    `More than one Compliance account uses ${email || "this e-mail"}. Ask IT to remove the duplicate before signing in through SWiSH World.`,
+  "mapping-refused": () =>
+    "The Compliance account linked to you in SWiSH World cannot be used for single sign-on (its e-mail differs from yours or it is an administrator account). Sign in with your password or ask IT to correct the identity mapping.",
+};
+
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = (await searchParams) ?? {};
+  const ssoReason = typeof params.sso === "string" ? params.sso : "";
+  const ssoEmail = typeof params.email === "string" ? params.email.slice(0, 200) : "";
+  const ssoMessage = ssoReason ? SSO_MESSAGES[ssoReason]?.(ssoEmail) : undefined;
+
   return (
     <main className="min-h-screen grid grid-cols-1 lg:grid-cols-2 bg-white">
       {/* ───────────────────────── LEFT PANEL ───────────────────────── */}
@@ -108,6 +133,15 @@ export default function LoginPage() {
           <p className="text-xs md:text-sm text-gray-500 tracking-[0.16em] uppercase mt-4 font-medium">
             Establish secure connection to the compliance mainframe
           </p>
+
+          {ssoMessage && (
+            <div
+              role="status"
+              className="mt-8 text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3"
+            >
+              {ssoMessage}
+            </div>
+          )}
 
           <div className="mt-10">
             <LoginForm />

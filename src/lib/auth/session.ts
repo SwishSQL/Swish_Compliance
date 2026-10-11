@@ -73,24 +73,38 @@ export async function changeOwnPassword(
   return "ok";
 }
 
-/** Sign a JWT and write it to an HTTP-only cookie. */
-export async function createSession(user: SessionUser): Promise<void> {
-  const token = await new SignJWT({ ...user })
+/** Sign the session JWT exactly as the login does (HS256, 8 h). */
+export async function signSessionToken(user: SessionUser): Promise<string> {
+  return new SignJWT({ ...user })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime("8h")
     .sign(secret);
-  const jar = await cookies();
-  jar.set(COOKIE_NAME, token, {
+}
+
+/**
+ * Cookie attributes of the session cookie. Shared by the login (via
+ * createSession) and the SWiSH World single sign-on handoff, which sets the
+ * cookie on its redirect response, so both produce an identical cookie.
+ */
+export function sessionCookieOptions() {
+  return {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: "lax" as const,
     secure:
       env.SESSION_COOKIE_SECURE !== undefined
         ? env.SESSION_COOKIE_SECURE === "true"
         : env.NODE_ENV === "production",
     path: "/",
     maxAge: COOKIE_MAX_AGE,
-  });
+  };
+}
+
+/** Sign a JWT and write it to an HTTP-only cookie. */
+export async function createSession(user: SessionUser): Promise<void> {
+  const token = await signSessionToken(user);
+  const jar = await cookies();
+  jar.set(COOKIE_NAME, token, sessionCookieOptions());
 }
 
 /** Read the cookie and return the current session, or null. */

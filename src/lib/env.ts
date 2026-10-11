@@ -11,6 +11,13 @@ const envSchema = z.object({
   // intranet; browsers silently drop a Secure cookie on http://, which
   // looks like "login succeeds but I'm sent back to the login page".
   SESSION_COOKIE_SECURE: z.enum(["true", "false"]).optional(),
+  // SWiSH World single sign-on (src/app/api/sso/handoff/route.ts). The secret
+  // must equal SSO_SECRET_COMPLIANCE in SWiSH World's .env; the source code is
+  // the audience SWiSH World puts in the token (default COMPLIANCE); the base
+  // URL is the public https origin used for redirects behind the IIS proxy.
+  TASK_HUB_SSO_SECRET: z.string().optional(),
+  TASK_HUB_SOURCE_CODE: z.string().optional(),
+  APP_BASE_URL: z.string().optional(),
 });
 
 function parseEnv() {

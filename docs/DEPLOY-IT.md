@@ -98,3 +98,27 @@ keeping anything. Then start the app again. Skip this step for a fresh install.
 Everything lives in the one database (attachments are stored inside it as
 base64 text, up to ~10 MB each). A normal SQL Server backup of `swish_compliance` is the
 complete backup.
+
+## SWiSH World single sign-on
+
+SWiSH World (world.swishhh.net) opens Compliance through
+`https://compliance.swishhh.net/api/sso/handoff?token=<60-second JWT>`
+(`src/app/api/sso/handoff/route.ts`). The route verifies the token with the
+shared secret, finds the person in `dbo.users` by e-mail (the account must
+already exist and be active; nothing is created automatically), sets the normal
+`swish_session` cookie and redirects to the requested page (default `/my-work`).
+
+`.env.local` needs:
+
+```
+TASK_HUB_SSO_SECRET=<same value as SSO_SECRET_COMPLIANCE in SWiSH World's .env>
+TASK_HUB_SOURCE_CODE=COMPLIANCE
+APP_BASE_URL=https://compliance.swishhh.net
+```
+
+Rotate the secret on both sides together. Check: opening
+`https://compliance.swishhh.net/api/sso/handoff` without a token must answer
+`401` with a plain-text "invalid or expired" message; `500` means the secret is
+missing; a JSON `{"error":"unauthorized"}` means the path was removed from
+`PUBLIC_PATHS` in `src/middleware.ts`. People without a Compliance account are
+sent to `/login?sso=no-user`.
