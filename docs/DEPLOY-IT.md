@@ -99,6 +99,19 @@ Everything lives in the one database (attachments are stored inside it as
 base64 text, up to ~10 MB each). A normal SQL Server backup of `swish_compliance` is the
 complete backup.
 
+## Behind the IIS reverse proxy
+
+IIS passes requests to `http://127.0.0.1:6011`, so the app sees that as its
+host while the browser's origin is `https://compliance.swishhh.net`. Next.js
+rejects form buttons (Server Actions) when the two differ, which looks like
+"Application error: a server-side exception has occurred" on save/create
+buttons while pages and login still work; the server log then says
+`Invalid Server Actions request`. The app therefore allows the public host
+from `APP_BASE_URL` (default `compliance.swishhh.net`) in `next.config.ts`.
+For a **different or additional** public host set `APP_BASE_URL`, or
+`SERVER_ACTIONS_ALLOWED_ORIGINS=host1,host2`, in `.env.local` **before**
+`npm run build` (the value is baked in at build time), then rebuild and restart.
+
 ## SWiSH World single sign-on
 
 SWiSH World (world.swishhh.net) opens Compliance through
