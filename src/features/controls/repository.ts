@@ -4,7 +4,7 @@ import {
   AUDIT_RESPONSE_ANSWERED_SQL,
   AUDIT_RESPONSE_SHORTFALL_SQL,
 } from "@/features/audits/types";
-import type { Control, ControlHealth } from "./types";
+import { ratesFromSums, type Control, type ControlHealth, type ControlRates } from "./types";
 
 const CTRL_SELECT = `
   c.id, c.code, c.name, c.description, c.framework_id, f.name AS framework_name, f.code AS framework_code,
@@ -270,4 +270,53 @@ export async function recomputeControlHealth(controlId: number): Promise<Control
  */
 export async function recomputeAllControlHealth(): Promise<number> {
   return recomputeHealth();
+}
+
+/**
+ * Success / Failure / N-A rates per control from the answers of every
+ * submitted/closed audit (see ControlRates). A question reaches its control
+ * through the test it was asked under, as in the health calculation. Pass a
+ * control id for just that one.
+ */
+export async function listControlRates(
+  controlId?: number
+): Promise<Map<number, ControlRates>> {
+  const params: unknown[] = [];
+  let only = "";
+  if (controlId !== undefined) {
+    params.push(controlId);
+    only = `AND ch.control_id = $1`;
+  }
+  const rows = await queryAll<{
+    control_id: number;
+    questions: number;
+    sum_yes: number;
+    sum_no: number;
+    sum_na: number;
+  }>(
+    `SELECT control_id,
+            COUNT(*)            AS questions,
+            SUM(yes_percent) AS sum_yes,
+            SUM(no_percent)  AS sum_no,
+            SUM(na_percent)  AS sum_na
+     FROM (
+       SELECT DISTINCT ch.control_id, a.id AS audit_id, r.item_id,
+              r.yes_percent, r.no_percent, r.na_percent
+       FROM audit_responses r
+       JOIN audits a ON a.id = r.audit_id AND a.status IN ('submitted','closed')
+       JOIN audit_tests at ON at.audit_id = a.id
+       JOIN check_checklist_items cci
+         ON cci.check_id = at.check_id AND cci.checklist_item_id = r.item_id
+       JOIN checks ch ON ch.id = at.check_id AND ch.control_id IS NOT NULL
+       WHERE r.yes_percent IS NOT NULL ${only}
+     ) answers
+     GROUP BY control_id`,
+    params
+  );
+  return new Map(
+    rows.map((r) => [
+      r.control_id,
+      ratesFromSums(r.questions, r.sum_yes, r.sum_no, r.sum_na),
+    ])
+  );
 }

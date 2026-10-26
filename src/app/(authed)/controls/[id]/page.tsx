@@ -6,7 +6,9 @@ import Workspace from "@/features/shell/Workspace";
 import {
   getControl,
   listControlLinks,
+  listControlRates,
 } from "@/features/controls/repository";
+import ControlRatesBadges from "@/features/controls/ControlRatesBadges";
 import {
   linkControlAction,
   unlinkControlAction,
@@ -32,6 +34,7 @@ export default async function ControlDetailPage({
   const ctrl = await getControl(id);
   if (!ctrl) notFound();
   const links = await listControlLinks(id);
+  const controlRates = (await listControlRates(id)).get(id);
   const canEdit = canEditSops(user.role) || user.role === "compliance";
 
   // Full lineage for the header — the domain comes via the framework.
@@ -141,6 +144,9 @@ export default async function ControlDetailPage({
                   {ctrl.framework_name}
                 </Link>
               )}
+            </div>
+            <div className="mb-2">
+              <ControlRatesBadges rates={controlRates} detailed />
             </div>
             <h2 className="text-lg font-bold text-gray-900 mb-1">{ctrl.name}</h2>
             {ctrl.description && <p className="text-xs text-gray-600 max-w-3xl">{ctrl.description}</p>}

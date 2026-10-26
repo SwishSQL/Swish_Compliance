@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { requireUser, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
-import { listControls } from "@/features/controls/repository";
+import { listControls, listControlRates } from "@/features/controls/repository";
+import ControlRatesBadges from "@/features/controls/ControlRatesBadges";
 import { listFrameworks } from "@/features/frameworks/repository";
 import { getUserScope, getScopedIds } from "@/lib/auth/access";
 import { recomputeAllControlsAction } from "@/features/controls/actions";
@@ -34,6 +35,7 @@ export default async function ControlsPage({
       )
     : allControls;
   const frameworks = await listFrameworks();
+  const rates = await listControlRates();
 
   return (
     <Workspace
@@ -99,13 +101,14 @@ export default async function ControlsPage({
               <th className="text-left px-5 py-3 font-medium">Framework</th>
               <th className="text-left px-5 py-3 font-medium">Owner</th>
               <th className="text-left px-5 py-3 font-medium">Health</th>
+              <th className="text-left px-5 py-3 font-medium">Success / Failure / N/A</th>
               <th className="text-left px-5 py-3 font-medium">Linked</th>
             </tr>
           </thead>
           <tbody>
             {controls.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-5 py-12 text-center text-gray-400">
+                <td colSpan={6} className="px-5 py-12 text-center text-gray-400">
                   No controls match the filter.
                 </td>
               </tr>
@@ -128,6 +131,9 @@ export default async function ControlsPage({
                     <span className={`w-1.5 h-1.5 rounded-full ${HEALTH_DOT[c.health_status]}`} />
                     {HEALTH_LABEL[c.health_status]}
                   </span>
+                </td>
+                <td className="px-5 py-3">
+                  <ControlRatesBadges rates={rates.get(c.id)} />
                 </td>
                 <td className="px-5 py-3 text-xs text-gray-500">
                   {c.linked_sops} SOPs · {c.linked_checks} checks · {c.open_capas} CAPAs

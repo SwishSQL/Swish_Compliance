@@ -3,7 +3,8 @@ import { requireUser } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import EmptyState from "@/features/shell/EmptyState";
 import { queryAll, queryOne } from "@/lib/db";
-import { openAuditFindingsSql } from "@/features/controls/repository";
+import { openAuditFindingsSql, listControlRates } from "@/features/controls/repository";
+import { combineRates } from "@/features/controls/types";
 
 /* ────────────────────────────────────────────────────────────────── */
 /*  Server-side data layer                                            */
@@ -206,6 +207,10 @@ export default async function ReportsPage() {
      ORDER BY CASE WHEN c.health_status = 'failing' THEN 1 ELSE 0 END DESC, open_capas DESC`
   );
 
+  /* ── Control answer rates (Yes = success, No = failure, N/A left out) ── */
+  const controlRates = await listControlRates();
+  const overallRates = combineRates(controlRates.values());
+
   /* ── Recent activity (audit_logs) ─────────────────────────────── */
   const activity = await queryAll<ActivityRow>(
     `SELECT TOP (12) al.action, al.entity, al.entity_id,
@@ -239,7 +244,11 @@ export default async function ReportsPage() {
   /* ── Computed composites ──────────────────────────────────────── */
   const approvedRate = pct(overview?.approved_sops, overview?.total_sops);
   const closureRate = pct(overview?.closed_capas, overview?.total_capas);
-  const controlHealthRate = pct(overview?.healthy_controls, overview?.total_controls);
+  // Control health = the Overall success score across every audited control:
+  // Yes ÷ (Yes + No), with N/A left out of the denominator. Its complement is
+  // the failure rate (the "No" answers), which is what drives failed controls.
+  const controlHealthRate =
+    overallRates.score !== null ? Math.round(overallRates.score) : 0;
   const auditPassRate = overview?.avg_score ? Number(overview.avg_score) : 0;
 
   // Composite "compliance health" = simple average of the four percentages.
@@ -302,7 +311,7 @@ export default async function ReportsPage() {
           <div className="grid grid-cols-2 gap-3">
             <HeroMetric label="SOPs approved" value={`${approvedRate}%`} caption={`${overview?.approved_sops ?? 0} / ${overview?.total_sops ?? 0}`} />
             <HeroMetric label="Audit avg" value={`${auditPassRate || 0}%`} caption={`${overview?.total_audits ?? 0} audits`} />
-            <HeroMetric label="Control health" value={`${controlHealthRate}%`} caption={`${overview?.healthy_controls ?? 0} healthy · ${overview?.failing_controls ?? 0} failing`} />
+            <HeroMetric label="Control health" value={`${controlHealthRate}%`} caption={overallRates.questions > 0 ? `${Math.round(overallRates.failure)}% failure (No) · ${overview?.failing_controls ?? 0} failing` : "not audited yet"} />
             <HeroMetric label="CAPA closure" value={`${closureRate}%`} caption={`${overview?.closed_capas ?? 0} closed`} />
           </div>
         </div>
@@ -512,6 +521,14 @@ export default async function ReportsPage() {
                   >
                     {c.health_status === "failing" ? "Failing" : "At risk"}
                   </span>
+                  {controlRates.get(c.id) && (
+                    <span
+                      className="text-xs font-medium text-red-700 min-w-[84px] text-right"
+                      title="Failure rate: the share of No answers across this control's audit answers"
+                    >
+                      {Math.round(controlRates.get(c.id)!.failure)}% failure
+                    </span>
+                  )}
                   <span className="text-xs font-medium text-gray-600 min-w-[60px] text-right">
                     {c.open_capas} CAPA{c.open_capas === 1 ? "" : "s"}
                   </span>
