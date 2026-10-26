@@ -1,5 +1,6 @@
 import "server-only";
 import { withTransaction, queryOne, queryAll } from "@/lib/db";
+import { recomputeAllControlHealth } from "@/features/controls/repository";
 
 /**
  * Generic admin "Delete" for the seven entities that have a real detail
@@ -482,6 +483,10 @@ export async function deleteEntityWithBackup(
       ]
     );
   });
+
+  // Deleting an audit, CAPA, test, control or checklist can remove findings
+  // that control health was derived from.
+  await recomputeAllControlHealth();
 }
 
 /** Used by the confirm dialog to show a couple of recent deletions can be

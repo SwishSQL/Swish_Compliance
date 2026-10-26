@@ -3,6 +3,7 @@ import { requireUser } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import EmptyState from "@/features/shell/EmptyState";
 import { queryAll, queryOne } from "@/lib/db";
+import { openAuditFindingsSql } from "@/features/controls/repository";
 
 /* ────────────────────────────────────────────────────────────────── */
 /*  Server-side data layer                                            */
@@ -198,7 +199,8 @@ export default async function ReportsPage() {
     `SELECT TOP (8) c.id, c.name, c.code, c.health_status,
        (SELECT COUNT(*) FROM corrective_actions ca
         JOIN control_links cl ON cl.entity_type = 'capa' AND cl.entity_id = ca.id
-        WHERE cl.control_id = c.id AND ca.status IN ('open','in_progress','submitted')) AS open_capas
+        WHERE cl.control_id = c.id AND ca.status IN ('open','in_progress','submitted'))
+       + ${openAuditFindingsSql("c.id")} AS open_capas
      FROM controls c
      WHERE c.is_active = 1 AND c.health_status IN ('failing','at_risk')
      ORDER BY CASE WHEN c.health_status = 'failing' THEN 1 ELSE 0 END DESC, open_capas DESC`
@@ -300,7 +302,7 @@ export default async function ReportsPage() {
           <div className="grid grid-cols-2 gap-3">
             <HeroMetric label="SOPs approved" value={`${approvedRate}%`} caption={`${overview?.approved_sops ?? 0} / ${overview?.total_sops ?? 0}`} />
             <HeroMetric label="Audit avg" value={`${auditPassRate || 0}%`} caption={`${overview?.total_audits ?? 0} audits`} />
-            <HeroMetric label="Control health" value={`${controlHealthRate}%`} caption={`${overview?.healthy_controls ?? 0} healthy`} />
+            <HeroMetric label="Control health" value={`${controlHealthRate}%`} caption={`${overview?.healthy_controls ?? 0} healthy · ${overview?.failing_controls ?? 0} failing`} />
             <HeroMetric label="CAPA closure" value={`${closureRate}%`} caption={`${overview?.closed_capas ?? 0} closed`} />
           </div>
         </div>

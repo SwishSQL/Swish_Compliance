@@ -1,5 +1,6 @@
 import "server-only";
 import { queryAll, queryOne, execute } from "@/lib/db";
+import { recomputeAllControlHealth } from "@/features/controls/repository";
 import {
   AUDIT_RESPONSE_SHORTFALL_SQL,
   AUDIT_RESPONSE_PERFORMANCE_SQL,
@@ -703,6 +704,10 @@ export async function transitionCapa(
   } else if (next === "open") {
     await execute(`UPDATE corrective_actions SET status = 'open' WHERE id = $1`, [id]);
   }
+
+  // Verifying/closing a CAPA resolves its audit finding (and reopening
+  // un-resolves it), which is what control health is derived from.
+  await recomputeAllControlHealth();
 }
 
 export async function pendingCapaCount(): Promise<number> {

@@ -1,5 +1,9 @@
 import "server-only";
 import { queryAll, queryOne, execute } from "@/lib/db";
+import {
+  AUDIT_RESPONSE_ANSWERED_SQL,
+  AUDIT_RESPONSE_SHORTFALL_SQL,
+} from "@/features/audits/types";
 import type { Control, ControlHealth } from "./types";
 
 const CTRL_SELECT = `
@@ -127,48 +131,143 @@ export async function listControlLinks(controlId: number): Promise<{
 }
 
 /**
- * Recompute a single control's health from linked checks + open CAPAs.
- * Rules:
- *   - any failing check OR any critical open CAPA → 'failing'
- *   - any pending_review check OR any open CAPA → 'at_risk'
- *   - all checks passing (and at least one check exists) → 'healthy'
- *   - otherwise → 'unknown'
+ * Audit findings per control, one row per (control, audit, question): every
+ * ANSWERED audit question that fell under a test belonging to the control,
+ * whether it was a finding (below the pass threshold), and whether its
+ * corrective action is still unresolved.
+ *
+ * A finding reaches its control through the test it was asked under
+ * (audit_tests -> check_checklist_items -> checks.control_id) — NOT through
+ * audits.control_id, which is empty for a Full SOP audit. "Unresolved" means
+ * the CAPA is not yet verified/closed (a rejected fix is still unresolved).
  */
+const AUDIT_FINDINGS_BY_CONTROL_CTE = `
+  audit_findings AS (
+    SELECT DISTINCT ch.control_id, a.id AS audit_id, r.item_id,
+           CASE WHEN ${AUDIT_RESPONSE_SHORTFALL_SQL} THEN 1 ELSE 0 END AS is_finding,
+           CASE WHEN ca.id IS NULL OR ca.status NOT IN ('verified','closed')
+                THEN 1 ELSE 0 END AS unresolved
+    FROM audit_responses r
+    JOIN audits a ON a.id = r.audit_id AND a.status IN ('submitted','closed')
+    JOIN audit_tests at ON at.audit_id = a.id
+    JOIN check_checklist_items cci
+      ON cci.check_id = at.check_id AND cci.checklist_item_id = r.item_id
+    JOIN checks ch ON ch.id = at.check_id AND ch.control_id IS NOT NULL
+    LEFT JOIN corrective_actions ca
+      ON ca.source_audit_id = a.id AND ca.source_item_id = r.item_id
+    WHERE ${AUDIT_RESPONSE_ANSWERED_SQL}
+  )`;
+
+/**
+ * SQL expression: how many audit findings under the control referenced by
+ * `controlRef` (e.g. "c.id") still have an unresolved CAPA. Same mapping as
+ * the health calculation, for pages that list the open work next to a control.
+ */
+export function openAuditFindingsSql(controlRef: string): string {
+  return `(SELECT COUNT(*) FROM (
+      SELECT DISTINCT a.id AS audit_id, r.item_id
+      FROM audit_responses r
+      JOIN audits a ON a.id = r.audit_id AND a.status IN ('submitted','closed')
+      JOIN audit_tests at ON at.audit_id = a.id
+      JOIN check_checklist_items cci
+        ON cci.check_id = at.check_id AND cci.checklist_item_id = r.item_id
+      JOIN checks ch ON ch.id = at.check_id AND ch.control_id = ${controlRef}
+      LEFT JOIN corrective_actions ca
+        ON ca.source_audit_id = a.id AND ca.source_item_id = r.item_id
+      WHERE ${AUDIT_RESPONSE_SHORTFALL_SQL}
+        AND (ca.id IS NULL OR ca.status NOT IN ('verified','closed'))
+    ) open_findings)`;
+}
+
+/**
+ * Recompute control health (all controls, or just one) and store it.
+ *
+ * A control is:
+ *   - 'failing'  when a test of it is failing, OR a critical linked CAPA is
+ *                open, OR an audit finding on it still has an unresolved CAPA
+ *   - 'at_risk'  when a test awaits review, OR a linked CAPA is open
+ *   - 'healthy'  when all its tests pass, OR it was audited (at least one
+ *                answered question in a submitted audit) with every finding's
+ *                CAPA resolved
+ *   - 'unknown'  when nothing has measured it yet
+ *
+ * Audit CAPAs never get control_links rows, which is why the audit-derived
+ * part reads audit_responses directly. Only rows whose status actually
+ * changes are written.
+ */
+async function recomputeHealth(controlId?: number): Promise<number> {
+  const params: unknown[] = [];
+  let only = "";
+  if (controlId !== undefined) {
+    params.push(controlId);
+    only = `WHERE c.id = $1`;
+  }
+  return execute(
+    `WITH ${AUDIT_FINDINGS_BY_CONTROL_CTE},
+     audit_agg AS (
+       SELECT control_id,
+              COUNT(*)                                                     AS answered,
+              SUM(CASE WHEN is_finding = 1 AND unresolved = 1 THEN 1 ELSE 0 END) AS open_findings
+       FROM audit_findings
+       GROUP BY control_id
+     ),
+     calc AS (
+       SELECT c.id,
+         CASE
+           WHEN COALESCE(chk.failing, 0) > 0
+             OR COALESCE(lc.critical_open, 0) > 0
+             OR COALESCE(aa.open_findings, 0) > 0                    THEN 'failing'
+           WHEN COALESCE(chk.pending, 0) > 0
+             OR COALESCE(lc.open_capas, 0) > 0                       THEN 'at_risk'
+           WHEN (COALESCE(chk.total, 0) > 0 AND chk.passing = chk.total)
+             OR COALESCE(aa.answered, 0) > 0                         THEN 'healthy'
+           ELSE 'unknown'
+         END AS next_status
+       FROM controls c
+       LEFT JOIN (
+         SELECT control_id,
+                COUNT(*)                                                  AS total,
+                SUM(CASE WHEN last_status = 'failing'        THEN 1 ELSE 0 END) AS failing,
+                SUM(CASE WHEN last_status = 'passing'        THEN 1 ELSE 0 END) AS passing,
+                SUM(CASE WHEN last_status = 'pending_review' THEN 1 ELSE 0 END) AS pending
+         FROM checks WHERE is_active = 1 GROUP BY control_id
+       ) chk ON chk.control_id = c.id
+       LEFT JOIN (
+         SELECT cl.control_id,
+                COUNT(*)                                                           AS open_capas,
+                SUM(CASE WHEN ca.severity = 'critical' THEN 1 ELSE 0 END)           AS critical_open
+         FROM control_links cl
+         JOIN corrective_actions ca ON cl.entity_type = 'capa' AND cl.entity_id = ca.id
+         WHERE ca.status IN ('open','in_progress','submitted')
+         GROUP BY cl.control_id
+       ) lc ON lc.control_id = c.id
+       LEFT JOIN audit_agg aa ON aa.control_id = c.id
+       ${only}
+     )
+     UPDATE c
+        SET health_status = calc.next_status, health_updated_at = SYSUTCDATETIME()
+       FROM controls c
+       JOIN calc ON calc.id = c.id
+      WHERE c.health_status <> calc.next_status`,
+    params
+  );
+}
+
+/** Recompute one control's health (see recomputeHealth for the rules). */
 export async function recomputeControlHealth(controlId: number): Promise<ControlHealth> {
-  const row = await queryOne<{
-    failing: number;
-    passing: number;
-    pending: number;
-    total: number;
-    critical_open_capas: number;
-    open_capas: number;
-  }>(
-    `SELECT
-       COALESCE(SUM(CASE WHEN ch.last_status = 'failing'        THEN 1 ELSE 0 END),0) AS failing,
-       COALESCE(SUM(CASE WHEN ch.last_status = 'passing'        THEN 1 ELSE 0 END),0) AS passing,
-       COALESCE(SUM(CASE WHEN ch.last_status = 'pending_review' THEN 1 ELSE 0 END),0) AS pending,
-       COUNT(*)                                                                      AS total,
-       (SELECT COUNT(*) FROM corrective_actions ca
-        JOIN control_links cl ON cl.entity_type = 'capa' AND cl.entity_id = ca.id
-        WHERE cl.control_id = $1 AND ca.severity = 'critical'
-          AND ca.status IN ('open','in_progress','submitted'))                                AS critical_open_capas,
-       (SELECT COUNT(*) FROM corrective_actions ca
-        JOIN control_links cl ON cl.entity_type = 'capa' AND cl.entity_id = ca.id
-        WHERE cl.control_id = $1 AND ca.status IN ('open','in_progress','submitted'))         AS open_capas
-     FROM checks ch
-     WHERE ch.control_id = $1 AND ch.is_active = 1`,
+  await recomputeHealth(controlId);
+  const row = await queryOne<{ health_status: ControlHealth }>(
+    `SELECT health_status FROM controls WHERE id = $1`,
     [controlId]
   );
+  return row?.health_status ?? "unknown";
+}
 
-  let next: ControlHealth = "unknown";
-  if (row) {
-    if (row.failing > 0 || row.critical_open_capas > 0) next = "failing";
-    else if (row.pending > 0 || row.open_capas > 0) next = "at_risk";
-    else if (row.total > 0 && row.passing === row.total) next = "healthy";
-  }
-  await execute(
-    `UPDATE controls SET health_status = $2, health_updated_at = SYSUTCDATETIME() WHERE id = $1`,
-    [controlId, next]
-  );
-  return next;
+/**
+ * Recompute every control's health. Cheap (one set-based statement), so call
+ * it after anything that can change audit findings or their CAPAs: submitting
+ * an audit, verifying/closing/reopening a CAPA, deleting an audit or CAPA.
+ */
+export async function recomputeAllControlHealth(): Promise<number> {
+  return recomputeHealth();
 }

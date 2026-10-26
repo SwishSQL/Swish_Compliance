@@ -1,5 +1,6 @@
 import "server-only";
 import { queryAll, queryOne, execute } from "@/lib/db";
+import { recomputeAllControlHealth } from "@/features/controls/repository";
 import {
   AUDIT_RESPONSE_ANSWERED_SQL,
   AUDIT_RESPONSE_PERFORMANCE_SQL,
@@ -495,6 +496,10 @@ export async function submitAudit(
     [id, scorePct, maxScore, criticalFailed, summary]
   );
 
+  // A submitted audit's findings now feed control health (an unresolved
+  // finding makes its control failing; a clean answer makes it healthy).
+  await recomputeAllControlHealth();
+
   // Return the failed item IDs so the caller can spawn CAPAs. A finding is
   // any applicable answer that fell short of the threshold (migration 054)
   // — not just an outright "No", and not one that was entirely N-A.
@@ -526,6 +531,7 @@ export async function cancelAudit(id: number): Promise<void> {
     `UPDATE audits SET status = 'cancelled' WHERE id = $1`,
     [id]
   );
+  await recomputeAllControlHealth();
 }
 
 /**
@@ -545,4 +551,6 @@ export async function reopenAudit(id: number): Promise<void> {
      WHERE id = $1 AND status = 'submitted'`,
     [id]
   );
+  // Back in progress: its findings stop counting toward control health.
+  await recomputeAllControlHealth();
 }
