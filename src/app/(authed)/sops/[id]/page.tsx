@@ -11,6 +11,7 @@ import {
   isSopLocked,
   availableTransitions,
   canEditSopFields,
+  canChangeLockedSopAttachment,
 } from "@/features/sops/types";
 import {
   updateSopAttachmentAction,
@@ -85,8 +86,12 @@ export default async function SopDetailPage({
   //  - compliance when status is pending_compliance or returned_to_compliance
   //  - business_excellence when status is pending_business_excellence or returned_to_be
   //  - ceo when status is pending_ceo
+  // After final approval the content is frozen, but the source file may
+  // still be attached (see canChangeLockedSopAttachment).
   const canEditAttachment =
-    !locked &&
+    (locked &&
+      canChangeLockedSopAttachment(user.role, !!sop.attachment_data_url)) ||
+    (!locked &&
     (user.role === "admin" ||
       (user.role === "department_manager" &&
         (sop.status === "draft" || sop.status === "returned_to_dm") &&
@@ -95,7 +100,7 @@ export default async function SopDetailPage({
         (sop.status === "pending_compliance" || sop.status === "returned_to_compliance")) ||
       (user.role === "business_excellence" &&
         (sop.status === "pending_business_excellence" || sop.status === "returned_to_be")) ||
-      (user.role === "ceo" && sop.status === "pending_ceo"));
+      (user.role === "ceo" && sop.status === "pending_ceo")));
 
   // Most-recent rejection comment to surface above the actions card so the
   // current actor can read it without scrolling to history.
@@ -372,7 +377,8 @@ export default async function SopDetailPage({
           {sop.attachment_data_url ? (
             <div className="space-y-3">
               <p className="text-sm text-gray-600">
-                Replace the current file or remove it. Every change is recorded in the audit log.
+                Replace the current file or remove it. Every change is recorded in the audit log
+                {locked ? " as made after approval." : "."}
               </p>
               <form action={updateSopAttachmentAction} className="space-y-3">
                 <input type="hidden" name="id" value={sop.id} />
@@ -396,16 +402,25 @@ export default async function SopDetailPage({
               </form>
             </div>
           ) : (
-            <form action={updateSopAttachmentAction} className="space-y-3">
-              <input type="hidden" name="id" value={sop.id} />
-              <FilePicker name="attachment_file" />
-              <button
-                type="submit"
-                className="bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"
-              >
-                Upload attachment
-              </button>
-            </form>
+            <div className="space-y-3">
+              {locked && (
+                <p className="text-sm text-gray-600">
+                  This SOP is approved, so its content is locked — but you can still attach
+                  its source document. The upload is recorded in the audit log as made
+                  after approval.
+                </p>
+              )}
+              <form action={updateSopAttachmentAction} className="space-y-3">
+                <input type="hidden" name="id" value={sop.id} />
+                <FilePicker name="attachment_file" />
+                <button
+                  type="submit"
+                  className="bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"
+                >
+                  Upload attachment
+                </button>
+              </form>
+            </div>
           )}
         </div>
       )}

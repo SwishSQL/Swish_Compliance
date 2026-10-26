@@ -117,6 +117,25 @@ export function isSopLocked(status: SopStatus): boolean {
 }
 
 /**
+ * Who may add, replace or remove the attached source file once the SOP is
+ * locked (approved/archived). The approved CONTENT stays frozen, but SOPs
+ * loaded from the workbook arrive without their document, so it must still
+ * be possible to attach it afterwards:
+ *   - admin: add, replace or remove
+ *   - compliance: add only while no file is attached (never changes one)
+ * Shared by the page (which buttons to show) and the server actions (what is
+ * enforced); every such change is audit-logged as "after approval".
+ */
+export function canChangeLockedSopAttachment(
+  role: string,
+  hasAttachment: boolean
+): boolean {
+  if (role === "admin") return true;
+  if (role === "compliance") return !hasAttachment;
+  return false;
+}
+
+/**
  * Can this role edit the SOP's content (header + sections) at the given
  * status? Shared between the UI (decides whether to render the Edit
  * button) and the server action (enforces it at write time). The two

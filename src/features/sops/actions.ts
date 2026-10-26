@@ -20,6 +20,7 @@ import {
   findTransition,
   isSopLocked,
   canEditSopFields,
+  canChangeLockedSopAttachment,
   type SopStatus,
 } from "./types";
 import { notify } from "@/features/notifications/service";
@@ -505,8 +506,14 @@ export async function updateSopAttachmentAction(formData: FormData) {
   const id = Number(formData.get("id"));
   const current = await getSopById(id);
   if (!current) throw new Error("SOP not found.");
-  if (isSopLocked(current.status)) {
-    throw new Error("This SOP is locked. No further modifications are allowed.");
+  const afterApproval = isSopLocked(current.status);
+  if (
+    afterApproval &&
+    !canChangeLockedSopAttachment(user.role, !!current.attachment_data_url)
+  ) {
+    throw new Error(
+      "This SOP is locked. Only an admin can change its file, and Compliance can attach one while none exists."
+    );
   }
 
   const file = await extractAttachment(formData, "attachment_file");
@@ -523,6 +530,8 @@ export async function updateSopAttachmentAction(formData: FormData) {
       JSON.stringify({
         name: file.name,
         mime: file.mime,
+        replaced: !!current.attachment_data_url,
+        after_approval: afterApproval,
         user_name: user.displayName,
         user_role: user.role,
       }),
@@ -539,8 +548,9 @@ export async function removeSopAttachmentAction(formData: FormData) {
   const id = Number(formData.get("id"));
   const current = await getSopById(id);
   if (!current) throw new Error("SOP not found.");
-  if (isSopLocked(current.status)) {
-    throw new Error("This SOP is locked. No further modifications are allowed.");
+  const afterApproval = isSopLocked(current.status);
+  if (afterApproval && user.role !== "admin") {
+    throw new Error("This SOP is locked. Only an admin can remove its file.");
   }
 
   await setSopAttachment(id, null, null, null);
@@ -551,7 +561,12 @@ export async function removeSopAttachmentAction(formData: FormData) {
       user.id,
       user.email,
       id,
-      JSON.stringify({ user_name: user.displayName, user_role: user.role }),
+      JSON.stringify({
+        removed_name: current.attachment_name,
+        after_approval: afterApproval,
+        user_name: user.displayName,
+        user_role: user.role,
+      }),
     ]
   );
   revalidatePath(`/sops/${id}`);
