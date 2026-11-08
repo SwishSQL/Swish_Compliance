@@ -8,20 +8,38 @@ import {
 } from "@/features/domains/repository";
 import { getUserScope } from "@/lib/auth/access";
 import DomainAccordionGrid from "@/features/domains/DomainAccordionGrid";
+import FilterBar, { STATUS_OPTIONS } from "@/features/filters/FilterBar";
+import { domainMatches, idParam, loadLineage } from "@/features/filters/lineage";
 
-export default async function DomainsPage() {
+type Search = { search?: string; status?: string; department?: string; brand?: string };
+
+export default async function DomainsPage({ searchParams }: { searchParams: Promise<Search> }) {
   const user = await requireUser();
-  const [allDomains, frameworksByDomain, sopsByDomain] = await Promise.all([
-    listDomains(),
+  const sp = await searchParams;
+  const [allDomains, frameworksByDomain, sopsByDomain, lin] = await Promise.all([
+    listDomains(true),
     listFrameworksByDomain(),
     listSopsByDomain(),
+    loadLineage(),
   ]);
 
   // Access scoping: non-privileged users only see their mapped domains.
   const scope = await getUserScope(user.id, user.role);
-  const domains = scope.full
+  const scoped = scope.full
     ? allDomains
     : allDomains.filter((d) => scope.domainIds.includes(d.id));
+
+  // Filters (user spec 2026-11-08). Inactive domains were never listed;
+  // they show only when "Inactive" or "Any status" is picked.
+  const status = sp.status === "inactive" ? "inactive" : sp.status === "all" ? "all" : "active";
+  const q = sp.search?.trim().toLowerCase();
+  const filt = { department: idParam(sp.department), brand: idParam(sp.brand) };
+  const domains = scoped.filter(
+    (d) =>
+      (status === "all" || (status === "active" ? d.is_active : !d.is_active)) &&
+      (!q || [d.code, d.name, d.description].some((v) => v?.toLowerCase().includes(q))) &&
+      domainMatches(lin, d.id, filt)
+  );
 
   // Assemble each domain's expand-in-place data once here, server-side,
   // so DomainAccordionGrid only ever renders — it never fetches.
@@ -64,6 +82,18 @@ export default async function DomainsPage() {
           </Link>
         )}
       </div>
+
+      <FilterBar
+        action="/domains"
+        search={sp.search}
+        searchPlaceholder="Search by domain name, code or description…"
+        selects={[
+          { name: "status", label: "Status", options: [...STATUS_OPTIONS, { id: "all", name: "Any status" }], value: sp.status },
+          { name: "department", label: "Department", options: lin.departments, value: sp.department },
+          { name: "brand", label: "Brand", options: lin.brands, value: sp.brand },
+        ]}
+        count={{ shown: domains.length, total: scoped.length, noun: "domains" }}
+      />
 
       {domains.length === 0 && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-12 text-center text-gray-400">

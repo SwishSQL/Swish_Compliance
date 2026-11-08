@@ -2,15 +2,44 @@ import Link from "next/link";
 import { requireUser, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { listTemplates } from "@/features/checklists/repository";
+import FilterBar, { STATUS_OPTIONS } from "@/features/filters/FilterBar";
+import { anyFrameworkMatches, idParam, loadLineage } from "@/features/filters/lineage";
+
+type Search = {
+  search?: string;
+  domain?: string;
+  framework?: string;
+  category?: string;
+  status?: string;
+  department?: string;
+  brand?: string;
+};
 
 export default async function ChecklistTemplatesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ search?: string }>;
+  searchParams: Promise<Search>;
 }) {
   const user = await requireUser();
   const sp = await searchParams;
-  const templates = await listTemplates(sp.search);
+  const [all, lin] = await Promise.all([listTemplates(sp.search), loadLineage()]);
+
+  // Filters (user spec 2026-11-08). A checklist belongs to the frameworks
+  // (and so the domains, departments and brands) of the tests that use it.
+  const filt = {
+    domain: idParam(sp.domain),
+    framework: idParam(sp.framework),
+    department: idParam(sp.department),
+    brand: idParam(sp.brand),
+  };
+  const categories = [...new Set(all.map((t) => t.category).filter((c): c is string => !!c))].sort();
+  const templates = all.filter(
+    (t) =>
+      (!sp.category || t.category === sp.category) &&
+      (!sp.status || (sp.status === "active" ? t.is_active : !t.is_active)) &&
+      anyFrameworkMatches(lin, lin.templateFrameworks.get(t.id) ?? [], filt)
+  );
+  const frameworkOptions = lin.frameworks.filter((f) => !filt.domain || f.domain_id === filt.domain);
 
   return (
     <Workspace
@@ -19,19 +48,21 @@ export default async function ChecklistTemplatesPage({
       sessionLabel="Session"
       userLabel={user.displayName}
     >
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 mb-4 flex items-center gap-3 justify-between">
-        <form method="get" className="flex items-center gap-2 flex-1 max-w-md">
-          <input
-            type="text"
-            name="search"
-            defaultValue={sp.search ?? ""}
-            placeholder="Search by name, code or category…"
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-          />
-          <button className="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm">
-            Filter
-          </button>
-        </form>
+      <FilterBar
+        action="/checklists/templates"
+        search={sp.search}
+        searchPlaceholder="Search by name, code or category…"
+        selects={[
+          { name: "domain", label: "Domain", options: lin.domains, value: sp.domain },
+          { name: "framework", label: "Framework", options: frameworkOptions, value: sp.framework },
+          { name: "category", label: "Category", options: categories.map((c) => ({ id: c, name: c })), value: sp.category },
+          { name: "status", label: "Status", options: STATUS_OPTIONS, value: sp.status },
+          { name: "department", label: "Department", options: lin.departments, value: sp.department },
+          { name: "brand", label: "Brand", options: lin.brands, value: sp.brand },
+        ]}
+        count={{ shown: templates.length, total: all.length, noun: "checklists" }}
+      />
+      <div className="flex items-center gap-3 justify-end mb-4">
         {canEditSops(user.role) && (
           <Link
             href="/checklists/templates/new"

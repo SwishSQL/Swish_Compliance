@@ -28,6 +28,8 @@ export type Sop = {
   description: string | null;
   version: string;
   status: SopStatus;
+  /** Set on a draft that revises an approved SOP (migration 006). */
+  revision_of_id: number | null;
   file_url: string | null;
   attachment_data_url: string | null;
   attachment_name: string | null;
@@ -126,6 +128,31 @@ export function isSopLocked(status: SopStatus): boolean {
  * Shared by the page (which buttons to show) and the server actions (what is
  * enforced); every such change is audit-logged as "after approval".
  */
+/** Roles that manage every SOP's content, file and link (user spec 2026-11-08). */
+export const SOP_MANAGER_ROLES = ["admin", "compliance", "opex", "business_excellence"];
+
+/**
+ * Who may change an SOP's attachment and external link at any time — even
+ * when its content is locked — and start a new version of an approved SOP:
+ * Admin, Compliance, OPEX, Business Excellence, and the department manager
+ * who owns (or created) the SOP. Every change is audit-logged.
+ */
+export function canManageSop(
+  role: string,
+  userId: number,
+  sop: { owner_id: number | null; created_by: number | null }
+): boolean {
+  if (SOP_MANAGER_ROLES.includes(role)) return true;
+  return role === "department_manager" && (sop.owner_id === userId || sop.created_by === userId);
+}
+
+/** Next minor version: "1.0" → "1.1", "1.9" → "1.10", "2" → "2.1". */
+export function nextSopVersion(v: string): string {
+  const m = /^(\d+)(?:\.(\d+))?/.exec(v.trim());
+  if (!m) return `${v}.1`;
+  return `${m[1]}.${m[2] ? Number(m[2]) + 1 : 1}`;
+}
+
 export function canChangeLockedSopAttachment(
   role: string,
   hasAttachment: boolean
@@ -146,7 +173,9 @@ export function canChangeLockedSopAttachment(
  */
 export function canEditSopFields(role: string, status: SopStatus): boolean {
   if (status === "approved" || status === "archived") return false;
-  if (role === "admin") return true;
+  // Admin, Compliance, OPEX and Business Excellence may edit any SOP that
+  // is not locked (user spec 2026-11-08).
+  if (SOP_MANAGER_ROLES.includes(role)) return true;
   if (role === "department_manager") {
     return (
       status === "draft" ||
@@ -192,7 +221,7 @@ export const SOP_TRANSITIONS: SopTransition[] = [
   {
     from: "draft",
     to: "pending_compliance",
-    allowedRoles: ["department_manager", "admin"],
+    allowedRoles: ["department_manager", "admin", "compliance", "opex", "business_excellence"],
     commentRequired: false,
     label: "Submit to Compliance",
     description: "Send this draft to the Compliance team for first-stage review.",

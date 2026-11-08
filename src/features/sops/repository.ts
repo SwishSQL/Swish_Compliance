@@ -4,7 +4,7 @@ import type { TxClient } from "@/lib/db";
 import type { Sop, SopStatus } from "./types";
 
 const SOP_SELECT = `
-  s.id, s.code, s.title, s.description, s.version, s.status, s.file_url,
+  s.id, s.code, s.title, s.description, s.version, s.status, s.revision_of_id, s.file_url,
   s.attachment_data_url, s.attachment_name, s.attachment_mime,
   s.brand_id, b.name AS brand_name,
   s.department_id, d.name AS department_name,
@@ -370,6 +370,58 @@ export async function listSopEvents(sopId: number): Promise<SopEvent[]> {
      ORDER BY created_at DESC`,
     [sopId]
   );
+}
+
+/** Change only the external link (allowed at any status; see canManageSop). */
+export async function setSopLink(id: number, url: string | null): Promise<void> {
+  await execute(`UPDATE sops SET file_url = $1 WHERE id = $2`, [url, id]);
+}
+
+/** The open (not yet approved/archived) revision of an approved SOP, if any. */
+export async function getOpenRevision(
+  sopId: number
+): Promise<{ id: number; version: string; status: SopStatus } | undefined> {
+  return queryOne(
+    `SELECT TOP (1) id, version, status FROM sops
+     WHERE revision_of_id = $1 AND status NOT IN ('approved', 'archived')
+     ORDER BY id DESC`,
+    [sopId]
+  );
+}
+
+/**
+ * Start a new version of an approved SOP: a draft copy of its content,
+ * departments, file and link, with the next minor version number. The
+ * approved SOP is untouched and stays live until the copy is approved.
+ */
+export async function createSopRevision(sopId: number, version: string, userId: number): Promise<number> {
+  return withTransaction(async (tx) => {
+    const res = await tx.query<{ id: number }>(
+      `INSERT INTO sops
+         (code, title, description, version, status, file_url, brand_id, department_id,
+          owner_id, created_by, effective_date, review_date,
+          attachment_data_url, attachment_name, attachment_mime,
+          purpose, scope, process_flow, roles_responsibilities, inputs_outputs,
+          tools_forms, kpis, ownership_review, appendices, signatures_approval,
+          brand_is_function, is_all_departments, home_domain_id, revision_of_id)
+       OUTPUT INSERTED.id
+       SELECT code, title, description, $2, 'draft', file_url, brand_id, department_id,
+              owner_id, $3, effective_date, review_date,
+              attachment_data_url, attachment_name, attachment_mime,
+              purpose, scope, process_flow, roles_responsibilities, inputs_outputs,
+              tools_forms, kpis, ownership_review, appendices, signatures_approval,
+              brand_is_function, is_all_departments, home_domain_id, id
+       FROM sops WHERE id = $1`,
+      [sopId, version, userId]
+    );
+    const newId = res.rows[0].id;
+    await tx.query(
+      `INSERT INTO sop_departments (sop_id, department_id)
+       SELECT $1, department_id FROM sop_departments WHERE sop_id = $2`,
+      [newId, sopId]
+    );
+    return newId;
+  });
 }
 
 export async function setSopStatus(

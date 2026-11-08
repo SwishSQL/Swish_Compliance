@@ -4,6 +4,8 @@ import Workspace from "@/features/shell/Workspace";
 import { listAllQuestions } from "@/features/checklists/repository";
 import { queryAll } from "@/lib/db";
 import { getUserScope, getScopedIds } from "@/lib/auth/access";
+import FilterBar from "@/features/filters/FilterBar";
+import { anyFrameworkMatches, idParam, loadLineage } from "@/features/filters/lineage";
 
 /**
  * Questions — the last hop of the Compliance Library hierarchy (SOP ->
@@ -15,7 +17,15 @@ import { getUserScope, getScopedIds } from "@/lib/auth/access";
 export default async function QuestionsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ search?: string; checklist?: string }>;
+  searchParams: Promise<{
+    search?: string;
+    checklist?: string;
+    domain?: string;
+    framework?: string;
+    critical?: string;
+    department?: string;
+    brand?: string;
+  }>;
 }) {
   const user = await requireUser();
   const sp = await searchParams;
@@ -33,13 +43,35 @@ export default async function QuestionsPage({
   // authored content silently disappear instead of just being unscored.
   const scope = await getUserScope(user.id, user.role);
   const scopedIds = await getScopedIds(scope);
-  const questions = scopedIds
+  const scopedQuestions = scopedIds
     ? allQuestions.filter(
         (q) =>
           q.control_ids.length === 0 ||
           q.control_ids.some((id) => scopedIds.controlIds.includes(id))
       )
     : allQuestions;
+
+  // Filters (user spec 2026-11-08). A question belongs to the frameworks of
+  // the controls it is tested under, or else to its checklist's frameworks.
+  const lin = await loadLineage();
+  const filt = {
+    domain: idParam(sp.domain),
+    framework: idParam(sp.framework),
+    department: idParam(sp.department),
+    brand: idParam(sp.brand),
+  };
+  const questionFrameworks = (q: (typeof scopedQuestions)[number]): Iterable<number> => {
+    const fromControls = q.control_ids
+      .map((id) => lin.controlFramework.get(id))
+      .filter((x): x is number => x != null);
+    return fromControls.length ? fromControls : lin.templateFrameworks.get(q.template_id) ?? [];
+  };
+  const questions = scopedQuestions.filter(
+    (q) =>
+      (!sp.critical || (sp.critical === "yes" ? !!q.is_critical : !q.is_critical)) &&
+      anyFrameworkMatches(lin, questionFrameworks(q), filt)
+  );
+  const frameworkOptions = lin.frameworks.filter((f) => !filt.domain || f.domain_id === filt.domain);
 
   const checklists = await queryAll<{ id: number; name: string }>(
     `SELECT id, name FROM checklist_templates WHERE is_active = 1 ORDER BY name`
@@ -52,38 +84,20 @@ export default async function QuestionsPage({
       sessionLabel="Session"
       userLabel={user.displayName}
     >
-      <form className="flex flex-wrap items-center gap-3 mb-4">
-        <input
-          type="text"
-          name="search"
-          defaultValue={sp.search ?? ""}
-          placeholder="Search by question or checklist…"
-          className="flex-1 min-w-[220px] px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-        />
-        <select
-          name="checklist"
-          defaultValue={checklistFilter ?? ""}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-        >
-          <option value="">— All checklists —</option>
-          {checklists.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-        <button
-          type="submit"
-          className="bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"
-        >
-          Apply
-        </button>
-        {(sp.search || checklistFilter) && (
-          <Link href="/questions" className="text-sm text-gray-500 hover:text-gray-700">
-            Reset
-          </Link>
-        )}
-      </form>
+      <FilterBar
+        action="/questions"
+        search={sp.search}
+        searchPlaceholder="Search by question or checklist…"
+        selects={[
+          { name: "domain", label: "Domain", options: lin.domains, value: sp.domain },
+          { name: "framework", label: "Framework", options: frameworkOptions, value: sp.framework },
+          { name: "checklist", label: "Checklist", options: checklists, value: sp.checklist },
+          { name: "critical", label: "Critical", options: [{ id: "yes", name: "Critical only" }, { id: "no", name: "Not critical" }], value: sp.critical },
+          { name: "department", label: "Department", options: lin.departments, value: sp.department },
+          { name: "brand", label: "Brand", options: lin.brands, value: sp.brand },
+        ]}
+        count={{ shown: questions.length, total: scopedQuestions.length, noun: "questions" }}
+      />
 
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
         <table className="w-full text-sm">

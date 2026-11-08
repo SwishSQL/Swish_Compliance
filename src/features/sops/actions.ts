@@ -6,7 +6,7 @@ import { z } from "zod";
 import {
   requireUser,
   canCreateSops,
-  canEditSops,
+
 } from "@/lib/auth/guard";
 import { execute } from "@/lib/db";
 import {
@@ -15,12 +15,16 @@ import {
   setSopStatus,
   getSopById,
   setSopAttachment,
+  setSopLink,
+  getOpenRevision,
+  createSopRevision,
 } from "./repository";
 import {
   findTransition,
   isSopLocked,
   canEditSopFields,
-  canChangeLockedSopAttachment,
+  canManageSop,
+  nextSopVersion,
   type SopStatus,
 } from "./types";
 import { notify } from "@/features/notifications/service";
@@ -500,21 +504,15 @@ export async function updateSopAction(formData: FormData) {
 
 export async function updateSopAttachmentAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role) && user.role !== "department_manager") {
-    throw new Error("You don't have permission to update this SOP.");
-  }
   const id = Number(formData.get("id"));
   const current = await getSopById(id);
   if (!current) throw new Error("SOP not found.");
-  const afterApproval = isSopLocked(current.status);
-  if (
-    afterApproval &&
-    !canChangeLockedSopAttachment(user.role, !!current.attachment_data_url)
-  ) {
-    throw new Error(
-      "This SOP is locked. Only an admin can change its file, and Compliance can attach one while none exists."
-    );
+  // Admin / Compliance / OPEX / BE and the owning department manager may
+  // attach or replace the file at any status (user spec 2026-11-08).
+  if (!canManageSop(user.role, user.id, current)) {
+    throw new Error("You don't have permission to change this SOP's file.");
   }
+  const afterApproval = isSopLocked(current.status);
 
   const file = await extractAttachment(formData, "attachment_file");
   if (!file) throw new Error("No file was provided.");
@@ -542,16 +540,13 @@ export async function updateSopAttachmentAction(formData: FormData) {
 
 export async function removeSopAttachmentAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role) && user.role !== "department_manager") {
-    throw new Error("You don't have permission to update this SOP.");
-  }
   const id = Number(formData.get("id"));
   const current = await getSopById(id);
   if (!current) throw new Error("SOP not found.");
-  const afterApproval = isSopLocked(current.status);
-  if (afterApproval && user.role !== "admin") {
-    throw new Error("This SOP is locked. Only an admin can remove its file.");
+  if (!canManageSop(user.role, user.id, current)) {
+    throw new Error("You don't have permission to change this SOP's file.");
   }
+  const afterApproval = isSopLocked(current.status);
 
   await setSopAttachment(id, null, null, null);
   await execute(
@@ -607,6 +602,31 @@ export async function transitionSopAction(formData: FormData) {
   }
 
   await setSopStatus(id, next, next === "approved" ? user.id : null);
+
+  // A revision replaces the version it revises once it is approved.
+  if (next === "approved" && current.revision_of_id) {
+    const previous = await getSopById(current.revision_of_id);
+    if (previous && previous.status === "approved") {
+      await setSopStatus(previous.id, "archived", null);
+      await execute(
+        `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
+         VALUES ($1, $2, 'sop:archived', 'sop', $3, $4)`,
+        [
+          user.id,
+          user.email,
+          previous.id,
+          JSON.stringify({
+            from: "approved",
+            to: "archived",
+            user_name: user.displayName,
+            user_role: user.role,
+            comment: `Replaced by version ${current.version} (SOP #${id}).`,
+          }),
+        ]
+      );
+      revalidatePath(`/sops/${previous.id}`);
+    }
+  }
 
   await execute(
     `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
@@ -672,4 +692,96 @@ export async function transitionSopAction(formData: FormData) {
   revalidatePath("/sops");
   revalidatePath(`/sops/${id}`);
   revalidatePath("/my-work");
+}
+
+const LinkSchema = z.object({
+  id: z.coerce.number().int().positive(),
+  file_url: z
+    .string()
+    .trim()
+    .max(2000)
+    .refine((v) => v === "" || /^https?:\/\//i.test(v), "The link must start with http:// or https://"),
+});
+
+/**
+ * Change only the SOP's external link. Allowed at any status — the approved
+ * content stays locked — for the roles in canManageSop; audit-logged.
+ */
+export async function updateSopLinkAction(formData: FormData) {
+  const user = await requireUser();
+  const parsed = LinkSchema.safeParse({ id: formData.get("id"), file_url: formData.get("file_url") ?? "" });
+  if (!parsed.success) {
+    const id = Number(formData.get("id"));
+    redirect(`/sops/${id}?tab=overview&error=${encodeURIComponent(parsed.error.issues[0]?.message ?? "Invalid link.")}#files`);
+  }
+  const { id, file_url } = parsed.data;
+  const current = await getSopById(id);
+  if (!current) throw new Error("SOP not found.");
+  if (!canManageSop(user.role, user.id, current)) {
+    throw new Error("You don't have permission to change this SOP's link.");
+  }
+  const next = file_url === "" ? null : file_url;
+  if (next !== current.file_url) {
+    await setSopLink(id, next);
+    await execute(
+      `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
+       VALUES ($1, $2, 'sop:link_updated', 'sop', $3, $4)`,
+      [
+        user.id,
+        user.email,
+        id,
+        JSON.stringify({
+          old_url: current.file_url,
+          new_url: next,
+          after_approval: isSopLocked(current.status),
+          user_name: user.displayName,
+          user_role: user.role,
+        }),
+      ]
+    );
+  }
+  revalidatePath(`/sops/${id}`);
+  redirect(`/sops/${id}?tab=overview&saved=link#files`);
+}
+
+/**
+ * Edit an approved SOP by starting a new version: a draft copy (v1.0 →
+ * v1.1) that goes through the normal approval workflow. The approved SOP
+ * stays live and is archived when the new version is approved. If a new
+ * version is already in progress, open that one instead of a second copy.
+ */
+export async function reviseSopAction(formData: FormData) {
+  const user = await requireUser();
+  const id = Number(formData.get("id"));
+  const current = await getSopById(id);
+  if (!current) throw new Error("SOP not found.");
+  if (current.status !== "approved") throw new Error("Only an approved SOP can get a new version.");
+  if (!canManageSop(user.role, user.id, current)) {
+    throw new Error("You don't have permission to start a new version of this SOP.");
+  }
+
+  const open = await getOpenRevision(id);
+  if (open) redirect(`/sops/${open.id}/edit`);
+
+  const version = nextSopVersion(current.version);
+  const newId = await createSopRevision(id, version, user.id);
+  await execute(
+    `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
+     VALUES ($1, $2, 'sop:revision_started', 'sop', $3, $4)`,
+    [
+      user.id,
+      user.email,
+      newId,
+      JSON.stringify({
+        revision_of: id,
+        from_version: current.version,
+        to_version: version,
+        user_name: user.displayName,
+        user_role: user.role,
+      }),
+    ]
+  );
+  revalidatePath("/sops");
+  revalidatePath(`/sops/${id}`);
+  redirect(`/sops/${newId}/edit`);
 }

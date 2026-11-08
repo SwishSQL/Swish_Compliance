@@ -3,19 +3,45 @@ import { requireUser, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { listFrameworks } from "@/features/frameworks/repository";
 import { getUserScope, getScopedIds } from "@/lib/auth/access";
+import FilterBar, { STATUS_OPTIONS } from "@/features/filters/FilterBar";
+import { frameworkMatches, idParam, loadLineage } from "@/features/filters/lineage";
 
-export default async function FrameworksPage() {
+type Search = {
+  search?: string;
+  domain?: string;
+  category?: string;
+  status?: string;
+  department?: string;
+  brand?: string;
+};
+
+export default async function FrameworksPage({ searchParams }: { searchParams: Promise<Search> }) {
   const user = await requireUser();
-  const allFrameworks = await listFrameworks();
+  const sp = await searchParams;
+  const [allFrameworks, lin] = await Promise.all([listFrameworks(), loadLineage()]);
   // Access scoping: non-privileged users only see frameworks in their
   // mapped domains.
   const scope = await getUserScope(user.id, user.role);
   const scopedIds = await getScopedIds(scope);
-  const frameworks = scopedIds
+  const scoped = scopedIds
     ? allFrameworks.filter((f) => scopedIds.frameworkIds.includes(f.id))
     : allFrameworks;
+
+  // Filters (user spec 2026-11-08).
+  const q = sp.search?.trim().toLowerCase();
+  const filt = { domain: idParam(sp.domain), department: idParam(sp.department), brand: idParam(sp.brand) };
+  const categories = [...new Set(scoped.map((f) => f.category).filter((c): c is string => !!c))].sort();
+  const frameworks = scoped.filter(
+    (f) =>
+      (!q || [f.code, f.name, f.category, f.description, f.owner_name].some((v) => v?.toLowerCase().includes(q))) &&
+      (!sp.category || f.category === sp.category) &&
+      (!sp.status || (sp.status === "active" ? f.is_active : !f.is_active)) &&
+      frameworkMatches(lin, f.id, filt)
+  );
   const active = frameworks.filter((f) => f.is_active);
   const available = frameworks.filter((f) => !f.is_active);
+  const domainOf = new Map(lin.frameworks.map((f) => [f.id, f.domain_id]));
+  const visibleDomainIds = new Set(scoped.map((f) => domainOf.get(f.id)));
 
   // NOTE: the old ECS GRC bundle importer banner is gone (2026-07-07,
   // user decision). It re-imported a legacy 24-framework demo bundle
@@ -42,6 +68,20 @@ export default async function FrameworksPage() {
           </Link>
         </div>
       )}
+
+      <FilterBar
+        action="/frameworks"
+        search={sp.search}
+        searchPlaceholder="Search by framework name, code, category or owner…"
+        selects={[
+          { name: "domain", label: "Domain", options: lin.domains.filter((d) => visibleDomainIds.has(d.id)), value: sp.domain },
+          { name: "category", label: "Category", options: categories.map((c) => ({ id: c, name: c })), value: sp.category },
+          { name: "status", label: "Status", options: STATUS_OPTIONS, value: sp.status },
+          { name: "department", label: "Department", options: lin.departments, value: sp.department },
+          { name: "brand", label: "Brand", options: lin.brands, value: sp.brand },
+        ]}
+        count={{ shown: frameworks.length, total: scoped.length, noun: "frameworks" }}
+      />
 
       {/* Active frameworks */}
       <h3 className="text-xs uppercase tracking-widest text-gray-500 mb-3">

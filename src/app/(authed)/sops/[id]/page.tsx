@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser, canDeleteOrArchive } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
-import { getSopById, listSopEvents } from "@/features/sops/repository";
+import { getSopById, listSopEvents, getOpenRevision } from "@/features/sops/repository";
 import { queryAll } from "@/lib/db";
 import {
   SOP_STATUS_LABEL,
@@ -11,11 +11,13 @@ import {
   isSopLocked,
   availableTransitions,
   canEditSopFields,
-  canChangeLockedSopAttachment,
+  canManageSop,
 } from "@/features/sops/types";
 import {
   updateSopAttachmentAction,
   removeSopAttachmentAction,
+  updateSopLinkAction,
+  reviseSopAction,
 } from "@/features/sops/actions";
 import { acknowledgeSopAction } from "@/features/sops/acknowledgments/actions";
 import {
@@ -109,27 +111,12 @@ export default async function SopDetailPage({
   const ackList =
     isApproved && user.role === "admin" ? await listAcknowledgments(id, 50) : [];
 
-  // Editing the attachment is allowed for:
-  //  - admin always (until locked)
-  //  - department_manager when status is draft or returned_to_dm and they own it
-  //  - compliance when status is pending_compliance or returned_to_compliance
-  //  - business_excellence when status is pending_business_excellence or returned_to_be
-  //  - ceo when status is pending_ceo
-  // After final approval the content is frozen, but the source file may
-  // still be attached (see canChangeLockedSopAttachment).
-  const canEditAttachment =
-    (locked &&
-      canChangeLockedSopAttachment(user.role, !!sop.attachment_data_url)) ||
-    (!locked &&
-    (user.role === "admin" ||
-      (user.role === "department_manager" &&
-        (sop.status === "draft" || sop.status === "returned_to_dm") &&
-        (sop.owner_id === user.id || sop.created_by === user.id)) ||
-      (user.role === "compliance" &&
-        (sop.status === "pending_compliance" || sop.status === "returned_to_compliance")) ||
-      (user.role === "business_excellence" &&
-        (sop.status === "pending_business_excellence" || sop.status === "returned_to_be")) ||
-      (user.role === "ceo" && sop.status === "pending_ceo")));
+  // Admin / Compliance / OPEX / BE and the owning department manager may
+  // change the file and the external link at any status, and start a new
+  // version of an approved SOP (user spec 2026-11-08).
+  const canEditAttachment = canManageSop(user.role, user.id, sop);
+  const openRevision = sop.status === "approved" ? await getOpenRevision(sop.id) : undefined;
+  const revisedFrom = sop.revision_of_id ? await getSopById(sop.revision_of_id) : undefined;
 
   // Most-recent rejection comment to surface above the actions card so the
   // current actor can read it without scrolling to history.
@@ -211,12 +198,62 @@ export default async function SopDetailPage({
                 ✏️ Edit SOP
               </Link>
             )}
+            {sop.status === "approved" && canEditAttachment && (
+              openRevision ? (
+                <Link
+                  href={`/sops/${openRevision.id}`}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100"
+                >
+                  ✏️ Open new version v{openRevision.version}
+                </Link>
+              ) : (
+                <form action={reviseSopAction}>
+                  <input type="hidden" name="id" value={sop.id} />
+                  <button
+                    type="submit"
+                    title="Creates a draft copy (next version) that goes through approval; this version stays live until then."
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100"
+                  >
+                    ✏️ Edit SOP (new version)
+                  </button>
+                </form>
+              )
+            )}
+            {canEditAttachment && (
+              <Link
+                href={`/sops/${sop.id}?tab=overview#files`}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"
+              >
+                🔗 Link &amp; file
+              </Link>
+            )}
             {canDeleteOrArchive(user.role) && (
               <DeleteEntityButton entityType="sop" entityId={sop.id} label="SOP" />
             )}
           </div>
         </div>
       </div>
+
+      {revisedFrom && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4 text-sm text-amber-900">
+          This is a <b>new version (v{sop.version})</b> of{" "}
+          <Link href={`/sops/${revisedFrom.id}`} className="underline">
+            v{revisedFrom.version}
+          </Link>
+          {revisedFrom.status === "approved"
+            ? ". The approved version stays live until this one is approved; it is then archived automatically."
+            : ` (now ${SOP_STATUS_LABEL[revisedFrom.status].toLowerCase()}).`}
+        </div>
+      )}
+      {openRevision && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4 text-sm text-amber-900">
+          A new version{" "}
+          <Link href={`/sops/${openRevision.id}`} className="underline font-medium">
+            v{openRevision.version}
+          </Link>{" "}
+          is in progress ({SOP_STATUS_LABEL[openRevision.status].toLowerCase()}). This version stays live until it is approved.
+        </div>
+      )}
 
       {/* Highlight the most-recent rejection comment so the current actor sees it */}
       {recentRejection && (
@@ -400,7 +437,11 @@ export default async function SopDetailPage({
       <Flash
         saved={sp.saved}
         error={sp.error}
-        savedText="Feedback saved. The SOP owner and reviewers can see it; you are notified when someone responds."
+        savedText={
+          sp.saved === "link"
+            ? "External link updated. The change is recorded in the history."
+            : "Feedback saved. The SOP owner and reviewers can see it; you are notified when someone responds."
+        }
       />
 
       {/* ── Content: the template sections, one card each ─────────── */}
@@ -551,10 +592,32 @@ export default async function SopDetailPage({
 
       {tab === "overview" && (
       <>
-      {/* Manage attachment */}
+      {/* Manage external link + attachment (any status, logged) */}
       {canEditAttachment && (
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 mb-4">
+        <div id="files" className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 mb-4 scroll-mt-24">
           <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">
+            External link
+          </h3>
+          <form action={updateSopLinkAction} className="flex flex-wrap items-center gap-2 mb-6">
+            <input type="hidden" name="id" value={sop.id} />
+            <input
+              type="url"
+              name="file_url"
+              defaultValue={sop.file_url ?? ""}
+              placeholder="https://… (leave empty to remove)"
+              className="flex-1 min-w-[260px] px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+            />
+            <button
+              type="submit"
+              className="bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"
+            >
+              Save link
+            </button>
+            <span className="w-full text-xs text-gray-500">
+              Can be changed at any time{locked ? ", even though the content is approved and locked" : ""}. Every change is recorded in the history.
+            </span>
+          </form>
+          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4 pt-5 border-t border-gray-100">
             Attachment
           </h3>
 
@@ -784,6 +847,8 @@ function friendlyAction(action: string): { label: string; tone: string } {
   if (action === "sop:archived")                 return { label: "Archived", tone: "bg-gray-100 text-gray-700" };
   if (action === "sop:attachment_updated")       return { label: "Attachment updated", tone: "bg-indigo-50 text-indigo-700" };
   if (action === "sop:attachment_removed")       return { label: "Attachment removed", tone: "bg-gray-100 text-gray-600" };
+  if (action === "sop:link_updated")             return { label: "Link updated", tone: "bg-indigo-50 text-indigo-700" };
+  if (action === "sop:revision_started")         return { label: "New version started", tone: "bg-amber-50 text-amber-700" };
   if (action === "sop:acknowledged")             return { label: "Acknowledged ✓", tone: "bg-emerald-50 text-emerald-700" };
   return { label: action, tone: "bg-gray-100 text-gray-700" };
 }
