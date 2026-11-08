@@ -27,6 +27,13 @@ import FilePicker from "@/features/sops/FilePicker";
 import AttachmentDisplay from "@/features/sops/AttachmentDisplay";
 import ApprovalActions from "@/features/sops/ApprovalActions";
 import DeleteEntityButton from "@/features/admin/delete/DeleteEntityButton";
+import {
+  listSopFeedback,
+  sopFeedbackCountBySection,
+  type FeedbackView,
+} from "@/features/sops/feedback/repository";
+import { canTriageSopFeedback } from "@/features/sops/feedback/types";
+import { FeedbackForm, FeedbackList, Flash, Pill, SopDetailTabs } from "@/features/sops/feedback/ui";
 
 const ROLE_LABEL: Record<string, string> = {
   admin: "Administrator",
@@ -41,14 +48,36 @@ const ROLE_LABEL: Record<string, string> = {
 
 export default async function SopDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ tab?: string; section?: string; view?: string; saved?: string; error?: string }>;
 }) {
   const user = await requireUser();
   const { id: idStr } = await params;
+  const sp = await searchParams;
   const id = Number(idStr);
   const sop = await getSopById(id);
   if (!sop) notFound();
+
+  const tab = sp.tab === "overview" || sp.tab === "feedback" ? sp.tab : "content";
+  const triage = canTriageSopFeedback(user.role);
+  const fbView: FeedbackView = sp.view === "mine" ? "mine" : "all";
+  const [fbCounts, fbRows, deptRows, myDeptRow] = await Promise.all([
+    sopFeedbackCountBySection(id),
+    tab === "feedback" ? listSopFeedback({ view: fbView, userId: user.id, sopId: id }) : Promise.resolve([]),
+    tab === "feedback"
+      ? queryAll<{ name: string }>(`SELECT name FROM departments WHERE is_active = 1 ORDER BY name`)
+      : Promise.resolve([]),
+    tab === "feedback" && user.departmentId
+      ? queryAll<{ name: string }>(`SELECT name FROM departments WHERE id = $1`, [user.departmentId])
+      : Promise.resolve([]),
+  ]);
+  const fbTotal = Object.values(fbCounts).reduce((a, n) => a + n, 0);
+  const filled = SOP_SECTIONS.filter((s) => {
+    const v = sop[s.key as keyof typeof sop];
+    return typeof v === "string" && v.trim().length > 0;
+  });
 
   const locked = isSopLocked(sop.status);
   const transitions = availableTransitions(user.role, sop.status);
@@ -367,6 +396,161 @@ export default async function SopDetailPage({
         </div>
       )}
 
+      <SopDetailTabs sopId={sop.id} active={tab} feedback={fbTotal} />
+      <Flash
+        saved={sp.saved}
+        error={sp.error}
+        savedText="Feedback saved. The SOP owner and reviewers can see it; you are notified when someone responds."
+      />
+
+      {/* ── Content: the template sections, one card each ─────────── */}
+      {tab === "content" && (
+        <div className="grid lg:grid-cols-[260px_minmax(0,1fr)] gap-5 mb-4">
+          <aside className="space-y-3 lg:sticky lg:top-4 lg:self-start">
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 grid grid-cols-3 gap-2 text-center">
+              <div>
+                <div className="text-lg font-semibold tabular-nums text-gray-900">
+                  {filled.length}/{SOP_SECTIONS.length}
+                </div>
+                <div className="text-[10px] text-gray-500">Sections filled</div>
+              </div>
+              <div>
+                <div className="text-lg font-semibold tabular-nums text-gray-900">{fbTotal}</div>
+                <div className="text-[10px] text-gray-500">Comments</div>
+              </div>
+              <div>
+                <div className="text-lg font-semibold tabular-nums text-gray-900">v{sop.version}</div>
+                <div className="text-[10px] text-gray-500">Version</div>
+              </div>
+            </div>
+            <nav className="bg-white rounded-2xl border border-gray-200 shadow-sm p-2 text-[13px]" aria-label="Sections">
+              <div className="px-2 pt-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500">Sections</div>
+              {SOP_SECTIONS.map((s) => {
+                const isFilled = filled.some((f) => f.key === s.key);
+                return (
+                  <a
+                    key={s.key}
+                    href={`#sec-${s.key}`}
+                    className={`flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-gray-50 ${isFilled ? "text-gray-700" : "text-gray-400"}`}
+                  >
+                    <span className="w-5 text-right font-mono text-[11px] text-gray-500">{s.num}</span>
+                    <span className="flex-1 truncate capitalize">{s.label.toLowerCase()}</span>
+                    {fbCounts[s.key] ? <span className="tabular-nums text-[11px] text-brand-700">{fbCounts[s.key]}</span> : null}
+                  </a>
+                );
+              })}
+            </nav>
+            <Link
+              href={`/sops/${sop.id}?tab=feedback&section=general#comment`}
+              className="block text-center rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-brand-700 hover:bg-gray-50"
+            >
+              Comment on the whole SOP{fbCounts.general ? ` (${fbCounts.general})` : ""}
+            </Link>
+          </aside>
+
+          <section className="space-y-4 min-w-0">
+            {sop.description && (
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
+                <div className="text-[11px] uppercase tracking-widest text-gray-500 mb-1">Summary</div>
+                <p className="text-sm text-gray-800 whitespace-pre-line">{sop.description}</p>
+              </div>
+            )}
+            {SOP_SECTIONS.map((sec) => {
+              const value = sop[sec.key as keyof typeof sop];
+              const text = typeof value === "string" ? value.trim() : "";
+              const n = fbCounts[sec.key] ?? 0;
+              return (
+                <article
+                  key={sec.key}
+                  id={`sec-${sec.key}`}
+                  className="scroll-mt-24 bg-white rounded-2xl border border-gray-200 shadow-sm"
+                >
+                  <header className="flex flex-wrap items-center gap-2.5 px-4 py-3 border-b border-gray-100">
+                    <span className="w-8 h-8 rounded-lg bg-brand-700 text-white text-xs font-bold flex items-center justify-center shrink-0">
+                      {sec.num}
+                    </span>
+                    <div className="min-w-0">
+                      <h4 className="text-sm font-semibold text-gray-900 tracking-wide">{sec.label}</h4>
+                      <div className="text-[11px] text-gray-500">{sec.hint}</div>
+                    </div>
+                    <span className="ml-auto flex items-center gap-1.5">
+                      {!text && <Pill>Not filled</Pill>}
+                      {n > 0 && <Pill tone="bg-amber-50 text-amber-800 border-amber-200">{n} comment{n === 1 ? "" : "s"}</Pill>}
+                    </span>
+                  </header>
+                  <div className="px-4 py-4">
+                    {text ? (
+                      <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">{text}</div>
+                    ) : (
+                      <div className="text-sm text-gray-400">This section has not been written yet.</div>
+                    )}
+                  </div>
+                  <footer className="flex items-center gap-3 px-4 py-2.5 border-t border-gray-100 text-xs text-gray-500">
+                    {n > 0 && (
+                      <Link href={`/sops/${sop.id}?tab=feedback`} className="hover:text-gray-800">
+                        View comments
+                      </Link>
+                    )}
+                    <Link
+                      href={`/sops/${sop.id}?tab=feedback&section=${sec.key}#comment`}
+                      className="ml-auto inline-flex items-center gap-1 rounded-lg bg-brand-700 px-3 py-1.5 font-medium text-white hover:bg-brand-800"
+                    >
+                      Comment
+                    </Link>
+                  </footer>
+                </article>
+              );
+            })}
+          </section>
+        </div>
+      )}
+
+      {/* ── Feedback: record a comment, see everyone's ─────────────── */}
+      {tab === "feedback" && (
+        <div className="grid lg:grid-cols-[380px_minmax(0,1fr)] gap-5 mb-4">
+          <div className="lg:sticky lg:top-4 lg:self-start">
+            <FeedbackForm
+              sopId={sop.id}
+              sectionKey={sp.section ?? "general"}
+              returnTo={`/sops/${sop.id}?tab=feedback`}
+              departments={deptRows.map((d) => d.name)}
+              myDept={myDeptRow[0]?.name ?? ""}
+              userName={user.displayName}
+            />
+          </div>
+          <section className="space-y-3 min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5">
+                {(["all", "mine"] as const).map((v) => (
+                  <Link
+                    key={v}
+                    href={`/sops/${sop.id}?tab=feedback${v === "mine" ? "&view=mine" : ""}`}
+                    className={`px-3 py-1.5 rounded-md text-sm ${fbView === v ? "bg-brand-700 text-white" : "text-gray-600 hover:bg-gray-50"}`}
+                  >
+                    {v === "all" ? `All comments (${fbTotal})` : "Mine"}
+                  </Link>
+                ))}
+              </div>
+              <a
+                href={`/sops/feedback/export?sop=${sop.id}`}
+                className="ml-auto px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-sm text-gray-700 hover:bg-gray-50"
+              >
+                Download CSV
+              </a>
+            </div>
+            <FeedbackList
+              rows={fbRows}
+              userId={user.id}
+              triage={triage}
+              returnTo={`/sops/${sop.id}?tab=feedback${fbView === "mine" ? "&view=mine" : ""}`}
+              empty={fbView === "mine" ? "You have not commented on this SOP yet." : "No comments on this SOP yet."}
+            />
+          </section>
+        </div>
+      )}
+
+      {tab === "overview" && (
+      <>
       {/* Manage attachment */}
       {canEditAttachment && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 mb-4">
@@ -481,44 +665,6 @@ export default async function SopDetailPage({
         </div>
       )}
 
-      {/* ── Structured SOP sections (Universal Template) ─────────── */}
-      {SOP_SECTIONS.some((s) => {
-        const v = sop[s.key as keyof typeof sop];
-        return typeof v === "string" && v.trim().length > 0;
-      }) && (
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden mb-4">
-          <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-brand-50 to-emerald-50/50">
-            <h3 className="text-sm font-semibold text-brand-800 uppercase tracking-wider">
-              📝 SOP Content
-            </h3>
-            <p className="text-[11px] text-brand-700/80 mt-0.5">
-              Structured sections from the Universal SOP Template.
-            </p>
-          </div>
-          <div className="divide-y divide-gray-100">
-            {SOP_SECTIONS.map((sec) => {
-              const value = sop[sec.key as keyof typeof sop];
-              if (typeof value !== "string" || value.trim().length === 0) return null;
-              return (
-                <div key={sec.key} className="px-6 py-5">
-                  <div className="flex items-center gap-2.5 mb-3">
-                    <span className="w-8 h-8 rounded-lg bg-brand-700 text-white text-xs font-bold flex items-center justify-center shrink-0">
-                      {sec.num}
-                    </span>
-                    <h4 className="text-sm font-bold text-gray-800 tracking-wide uppercase">
-                      {sec.label}
-                    </h4>
-                  </div>
-                  <pre className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap font-sans bg-gray-50 rounded-lg p-4 border border-gray-100">
-                    {value}
-                  </pre>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Metadata grid */}
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8">
         <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">
@@ -602,6 +748,8 @@ export default async function SopDetailPage({
           </ul>
         </details>
       </div>
+      </>
+      )}
     </Workspace>
   );
 }

@@ -6,6 +6,8 @@ import { SOP_STATUS_LABEL, SOP_STATUS_TONE, type SopStatus } from "@/features/so
 import { queryOne } from "@/lib/db";
 import { getUserScope } from "@/lib/auth/access";
 import { importRecruitmentSopAction } from "@/features/admin/seeds/actions";
+import { openFeedbackBySop } from "@/features/sops/feedback/repository";
+import { SopRegisterTabs } from "@/features/sops/feedback/ui";
 
 type Search = { search?: string; status?: SopStatus };
 
@@ -33,6 +35,15 @@ export default async function SopsPage({
           r.department_ids.some((id) => scope.departmentIds.includes(id))
       );
   const total = rows.length;
+  const openFb = await openFeedbackBySop();
+  const visibleOpen = rows.reduce((a, r) => a + (openFb[r.id] ?? 0), 0);
+  const stats = [
+    { n: total, l: "SOPs" },
+    { n: rows.filter((r) => r.status === "approved").length, l: "Approved" },
+    { n: rows.filter((r) => r.status.startsWith("pending") || r.status.startsWith("returned")).length, l: "In review" },
+    { n: rows.filter((r) => r.status === "draft").length, l: "Draft" },
+    { n: visibleOpen, l: "Open comments" },
+  ];
 
   // Admin-only: surface the one-click Recruitment SOP importer right on
   // this page (in addition to Admin Home), so it's findable where SOPs
@@ -52,6 +63,16 @@ export default async function SopsPage({
       sessionLabel="Session"
       userLabel={user.displayName}
     >
+      <SopRegisterTabs active="register" openFeedback={visibleOpen} />
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
+        {stats.map((s) => (
+          <div key={s.l} className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4">
+            <div className="text-2xl font-semibold text-gray-900 tabular-nums">{s.n}</div>
+            <div className="text-xs text-gray-500">{s.l}</div>
+          </div>
+        ))}
+      </div>
+
       {/* Toolbar */}
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 mb-4 flex flex-wrap items-center gap-3 justify-between">
         <form className="flex items-center gap-2 flex-1 max-w-md" method="get">
@@ -115,13 +136,14 @@ export default async function SopsPage({
               <th className="text-left px-5 py-3 font-medium">Department</th>
               <th className="text-left px-5 py-3 font-medium">Version</th>
               <th className="text-left px-5 py-3 font-medium">Status</th>
+              <th className="text-left px-5 py-3 font-medium">Comments</th>
               <th className="text-left px-5 py-3 font-medium">Updated</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-5 py-12 text-center text-gray-400">
+                <td colSpan={7} className="px-5 py-12 text-center text-gray-400">
                   No SOPs match the current filters.
                 </td>
               </tr>
@@ -151,6 +173,15 @@ export default async function SopsPage({
                   >
                     {SOP_STATUS_LABEL[sop.status]}
                   </span>
+                </td>
+                <td className="px-5 py-3 text-xs">
+                  {openFb[sop.id] ? (
+                    <Link href={`/sops/${sop.id}?tab=feedback`} className="inline-flex items-center px-2 py-0.5 rounded-full border bg-amber-50 text-amber-800 border-amber-200 hover:underline">
+                      {openFb[sop.id]} open
+                    </Link>
+                  ) : (
+                    <span className="text-gray-400">—</span>
+                  )}
                 </td>
                 <td className="px-5 py-3 text-gray-500 text-xs">
                   {new Date(sop.updated_at).toLocaleDateString()}

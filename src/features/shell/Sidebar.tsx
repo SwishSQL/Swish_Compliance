@@ -12,7 +12,6 @@ type IconKey =
   | "sops" | "checklists" | "questions" | "audits" | "capa"
   | "domains" | "frameworks" | "controls" | "policies"
   | "admin-home" | "users" | "brands" | "departments" | "org-units" | "config" | "audit-logs" | "import"
-  | "supply-chain"
   | "logout" | "chevron-right" | "menu" | "close";
 
 const ICON_PATHS: Record<IconKey, React.ReactNode> = {
@@ -157,14 +156,6 @@ const ICON_PATHS: Record<IconKey, React.ReactNode> = {
       <line x1="12" y1="15" x2="12" y2="3" />
     </>
   ),
-  "supply-chain": (
-    <>
-      <path d="M1 3h15v13H1z" />
-      <path d="M16 8h4l3 3v5h-7z" />
-      <circle cx="5.5" cy="18.5" r="2.5" />
-      <circle cx="18.5" cy="18.5" r="2.5" />
-    </>
-  ),
   logout: (
     <>
       <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -257,12 +248,6 @@ const ASSURANCE: Section = {
     { href: "/audits", label: "Audits", icon: "audits" },
     { href: "/capa", label: "Corrective Actions", icon: "capa" },
   ],
-};
-
-// Supply Chain SOP review: process docket v1.0 (As-is 2026 → To-be 2027).
-const SUPPLY_CHAIN: Section = {
-  label: "Supply Chain",
-  items: [{ href: "/sc-sop", label: "SC SOP Review", icon: "supply-chain" }],
 };
 
 const ADMINISTRATION: Section = {
@@ -453,9 +438,6 @@ export default function Sidebar({
       },
     ];
   }
-  // Department heads are the main reviewers of the SC SOP docket, so every
-  // role (department managers included) gets this section.
-  sections.splice(sections.length - (role === "admin" ? 1 : 0), 0, SUPPLY_CHAIN);
 
   // Accordion: at most ONE section open at a time (user spec 2026-08-17—
   // opening a section like Workspace closes whichever other one was open).
