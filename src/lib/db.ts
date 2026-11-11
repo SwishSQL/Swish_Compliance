@@ -1,5 +1,28 @@
 import "server-only";
 import sql from "mssql";
+
+// Pin text parameters that have no explicit length to nvarchar(4000) / varchar(8000).
+// Otherwise the driver declares nvarchar(<length of the value>), and SQL Server caches
+// a separate query plan for every distinct string length (plan-cache bloat).
+{
+  type SqlParam = { type?: unknown; length?: number | null; value?: unknown };
+  type InputFn = (this: { parameters: Record<string, SqlParam> }, ...args: unknown[]) => unknown;
+  const proto = sql.Request.prototype as unknown as { input: InputFn; __fixedTextParams?: boolean };
+  if (!proto.__fixedTextParams) {
+    const originalInput = proto.input;
+    proto.input = function (...args) {
+      const result = originalInput.apply(this, args);
+      const param = this.parameters[String(args[0])];
+      if (param && param.length == null) {
+        const max = param.type === sql.TYPES.NVarChar ? 4000 : param.type === sql.TYPES.VarChar ? 8000 : 0;
+        if (max && (param.value == null || (typeof param.value === 'string' && param.value.length <= max))) param.length = max;
+      }
+      return result;
+    };
+    proto.__fixedTextParams = true;
+  }
+}
+
 import { env } from "@/lib/env";
 import { translateQuery } from "@/lib/sqlTranslate";
 
