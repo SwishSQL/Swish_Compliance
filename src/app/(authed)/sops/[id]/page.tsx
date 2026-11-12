@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser, canDeleteOrArchive } from "@/lib/auth/guard";
+import { requireUser, canDeleteOrArchive, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { getSopById, listSopEvents, getOpenRevision } from "@/features/sops/repository";
 import { queryAll } from "@/lib/db";
@@ -29,6 +29,12 @@ import FilePicker from "@/features/sops/FilePicker";
 import AttachmentDisplay from "@/features/sops/AttachmentDisplay";
 import ApprovalActions from "@/features/sops/ApprovalActions";
 import DeleteEntityButton from "@/features/admin/delete/DeleteEntityButton";
+import {
+  linkDomainToSopAction,
+  unlinkDomainFromSopAction,
+  linkFrameworkToSopAction,
+  unlinkFrameworkFromSopAction,
+} from "@/features/sops/linkActions";
 import {
   listSopFeedback,
   sopFeedbackCountBySection,
@@ -87,20 +93,42 @@ export default async function SopDetailPage({
 
   // Cross-references (user spec): each SOP has ONE home domain (from its
   // department); its frameworks are the ones under that home domain.
-  const sopDomains = await queryAll<{ id: number; name: string }>(
-    `SELECT dm.id, dm.name FROM domains dm
-     JOIN sops s ON s.home_domain_id = dm.id
-     WHERE s.id = $1`,
+  // A domain belongs to this SOP when it names it (domains.sop_id — set on
+  // the New Domain form or by the Link control below) or is its home domain.
+  // `direct` = linked by sop_id, i.e. the link this page can remove.
+  const SOP_DOMAIN_IDS = `SELECT d.id FROM domains d
+     WHERE d.sop_id = $1 OR d.id = (SELECT home_domain_id FROM sops WHERE id = $1)`;
+  const sopDomains = await queryAll<{ id: number; name: string; direct: number }>(
+    `SELECT dm.id, dm.name, CASE WHEN dm.sop_id = $1 THEN 1 ELSE 0 END AS direct
+     FROM domains dm
+     WHERE dm.id IN (${SOP_DOMAIN_IDS})
+     ORDER BY dm.name`,
     [id]
   );
-  const sopFrameworks = await queryAll<{ id: number; code: string | null; name: string }>(
-    `SELECT f.id, f.code, f.name
+  const sopFrameworks = await queryAll<{ id: number; name: string; direct: number }>(
+    `SELECT f.id, f.name, CASE WHEN f.sop_id = $1 THEN 1 ELSE 0 END AS direct
      FROM frameworks f
-     JOIN sops s ON s.home_domain_id = f.domain_id
-     WHERE s.id = $1
-     ORDER BY f.code, f.name`,
+     WHERE f.sop_id = $1 OR f.domain_id IN (${SOP_DOMAIN_IDS})
+     ORDER BY f.name`,
     [id]
   );
+  const canLinkScope = canEditSops(user.role);
+  const shownDomainIds = new Set(sopDomains.map((d) => d.id));
+  const shownFrameworkIds = new Set(sopFrameworks.map((f) => f.id));
+  const linkableDomains = canLinkScope
+    ? (
+        await queryAll<{ id: number; name: string }>(
+          `SELECT id, name FROM domains WHERE sop_id IS NULL ORDER BY name`
+        )
+      ).filter((d) => !shownDomainIds.has(d.id))
+    : [];
+  const linkableFrameworks = canLinkScope
+    ? (
+        await queryAll<{ id: number; name: string }>(
+          `SELECT id, name FROM frameworks WHERE sop_id IS NULL ORDER BY name`
+        )
+      ).filter((f) => !shownFrameworkIds.has(f.id))
+    : [];
 
   // Acknowledgments — only relevant once the SOP is approved.
   const isApproved = sop.status === "approved";
@@ -780,7 +808,7 @@ export default async function SopDetailPage({
 
       {/* Cross-reference panels — Domains + Frameworks governing this SOP */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-        <details className="group bg-white rounded-xl border border-gray-200 shadow-sm">
+        <details open className="group bg-white rounded-xl border border-gray-200 shadow-sm">
           <summary className="cursor-pointer list-none px-4 py-3 flex items-center gap-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
             <span className="transition-transform group-open:rotate-90 text-gray-400">▶</span>
             Domains ({sopDomains.length})
@@ -788,13 +816,51 @@ export default async function SopDetailPage({
           <ul className="border-t border-gray-100 divide-y divide-gray-100">
             {sopDomains.length === 0 && <li className="px-4 py-3 text-xs text-gray-400">No linked domains.</li>}
             {sopDomains.map((d) => (
-              <li key={d.id} className="px-4 py-2 text-sm">
+              <li key={d.id} className="px-4 py-2 text-sm flex items-center justify-between gap-3">
                 <Link href={`/domains/${d.id}`} className="text-brand-700 hover:underline">{d.name}</Link>
+                {canLinkScope && d.direct === 1 && (
+                  <form action={unlinkDomainFromSopAction}>
+                    <input type="hidden" name="sop_id" value={sop.id} />
+                    <input type="hidden" name="target_id" value={d.id} />
+                    <button type="submit" className="text-xs text-red-600 hover:underline">Unlink</button>
+                  </form>
+                )}
               </li>
             ))}
+            {canLinkScope && (
+              <li className="px-4 py-3">
+                {linkableDomains.length === 0 ? (
+                  <p className="text-xs text-gray-400">
+                    Every domain is already linked to a SOP.{" "}
+                    <Link href="/domains/new" className="text-brand-700 hover:underline">Create a new domain</Link>
+                  </p>
+                ) : (
+                  <form action={linkDomainToSopAction} className="flex items-center gap-2">
+                    <input type="hidden" name="sop_id" value={sop.id} />
+                    <select
+                      name="target_id"
+                      required
+                      defaultValue=""
+                      className="flex-1 min-w-0 border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white"
+                    >
+                      <option value="" disabled>Link a domain…</option>
+                      {linkableDomains.map((x) => (
+                        <option key={x.id} value={x.id}>{x.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="submit"
+                      className="bg-brand-700 hover:bg-brand-800 text-white px-3 py-1.5 rounded-lg text-sm font-medium"
+                    >
+                      Link
+                    </button>
+                  </form>
+                )}
+              </li>
+            )}
           </ul>
         </details>
-        <details className="group bg-white rounded-xl border border-gray-200 shadow-sm">
+        <details open className="group bg-white rounded-xl border border-gray-200 shadow-sm">
           <summary className="cursor-pointer list-none px-4 py-3 flex items-center gap-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
             <span className="transition-transform group-open:rotate-90 text-gray-400">▶</span>
             Frameworks ({sopFrameworks.length})
@@ -802,12 +868,48 @@ export default async function SopDetailPage({
           <ul className="border-t border-gray-100 divide-y divide-gray-100">
             {sopFrameworks.length === 0 && <li className="px-4 py-3 text-xs text-gray-400">No linked frameworks.</li>}
             {sopFrameworks.map((f) => (
-              <li key={f.id} className="px-4 py-2 text-sm">
-                <Link href={`/frameworks/${f.id}`} className="text-brand-700 hover:underline">
-                  {f.name}
-                </Link>
+              <li key={f.id} className="px-4 py-2 text-sm flex items-center justify-between gap-3">
+                <Link href={`/frameworks/${f.id}`} className="text-brand-700 hover:underline">{f.name}</Link>
+                {canLinkScope && f.direct === 1 && (
+                  <form action={unlinkFrameworkFromSopAction}>
+                    <input type="hidden" name="sop_id" value={sop.id} />
+                    <input type="hidden" name="target_id" value={f.id} />
+                    <button type="submit" className="text-xs text-red-600 hover:underline">Unlink</button>
+                  </form>
+                )}
               </li>
             ))}
+            {canLinkScope && (
+              <li className="px-4 py-3">
+                {linkableFrameworks.length === 0 ? (
+                  <p className="text-xs text-gray-400">
+                    Every framework is already linked to a SOP.{" "}
+                    <Link href="/frameworks/new" className="text-brand-700 hover:underline">Create a new framework</Link>
+                  </p>
+                ) : (
+                  <form action={linkFrameworkToSopAction} className="flex items-center gap-2">
+                    <input type="hidden" name="sop_id" value={sop.id} />
+                    <select
+                      name="target_id"
+                      required
+                      defaultValue=""
+                      className="flex-1 min-w-0 border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white"
+                    >
+                      <option value="" disabled>Link a framework…</option>
+                      {linkableFrameworks.map((x) => (
+                        <option key={x.id} value={x.id}>{x.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="submit"
+                      className="bg-brand-700 hover:bg-brand-800 text-white px-3 py-1.5 rounded-lg text-sm font-medium"
+                    >
+                      Link
+                    </button>
+                  </form>
+                )}
+              </li>
+            )}
           </ul>
         </details>
       </div>
