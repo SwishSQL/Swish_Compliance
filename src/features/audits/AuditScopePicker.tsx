@@ -102,7 +102,11 @@ export default function AuditScopePicker({
         sopIdsWithContent.add(f.sop_id);
       }
     }
-    return policies.filter((p) => sopIdsWithContent.has(p.id));
+    // A SOP that itself applies to the department is always offered, even
+    // before any of its content is tagged — otherwise it just looks missing.
+    return policies.filter(
+      (p) => sopIdsWithContent.has(p.id) || (sopDepts.get(p.id)?.has(deptNum) ?? false)
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [policies, graph.domains, graph.frameworks, deptNum, sopDepts]);
 
