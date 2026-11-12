@@ -31,7 +31,7 @@ export async function createDomainAction(formData: FormData) {
   // domains.code is NOT NULL/UNIQUE but is no longer a user-facing field
   // (user spec: no codes anywhere in the UI) — generate an opaque internal
   // one so the form never has to ask for it.
-  const code = `AUTO-${randomUUID()}`;
+  const code = `AUTO-${randomUUID().replace(/-/g, "")}`;
 
   const id = await createDomain({
     code,
