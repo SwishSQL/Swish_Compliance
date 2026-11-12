@@ -82,6 +82,17 @@ export type DeleteImpact = {
   blockedReason: string | null;
 };
 
+/**
+ * Deleting a SOP also deletes everything built under it: the domains that
+ * name it, the frameworks of those domains (or naming the SOP directly), the
+ * controls of those frameworks and the tests of those controls. Audits and
+ * CAPAs are records of what happened, so they are kept (just unlinked).
+ */
+const SOP_DOMAINS_SQL = `SELECT id FROM domains WHERE sop_id = $1`;
+const SOP_FRAMEWORKS_SQL = `SELECT id FROM frameworks WHERE sop_id = $1 OR domain_id IN (${SOP_DOMAINS_SQL})`;
+const SOP_CONTROLS_SQL = `SELECT id FROM controls WHERE framework_id IN (${SOP_FRAMEWORKS_SQL})`;
+const SOP_TESTS_SQL = `SELECT id FROM checks WHERE control_id IN (${SOP_CONTROLS_SQL})`;
+
 async function impactCount(sql: string, id: number): Promise<number> {
   const row = await queryOne<{ n: string }>(sql, [id]);
   return Number(row?.n ?? 0);
@@ -130,14 +141,24 @@ export async function getDeleteImpact(
           cascaded: true,
         },
         {
-          label: "Domains that name this as their SOP (will be unlinked)",
-          count: await impactCount(`SELECT COUNT(*) n FROM domains WHERE sop_id = $1`, id),
-          cascaded: false,
+          label: "Domains under this SOP",
+          count: await impactCount(`SELECT COUNT(*) n FROM (${SOP_DOMAINS_SQL}) x`, id),
+          cascaded: true,
         },
         {
-          label: "Frameworks that name this as their SOP (will be unlinked)",
-          count: await impactCount(`SELECT COUNT(*) n FROM frameworks WHERE sop_id = $1`, id),
-          cascaded: false,
+          label: "Frameworks under this SOP",
+          count: await impactCount(`SELECT COUNT(*) n FROM (${SOP_FRAMEWORKS_SQL}) x`, id),
+          cascaded: true,
+        },
+        {
+          label: "Controls under those frameworks",
+          count: await impactCount(`SELECT COUNT(*) n FROM (${SOP_CONTROLS_SQL}) x`, id),
+          cascaded: true,
+        },
+        {
+          label: "Tests under those controls",
+          count: await impactCount(`SELECT COUNT(*) n FROM (${SOP_TESTS_SQL}) x`, id),
+          cascaded: true,
         },
         {
           // Counts every audit that names this SOP at all (migration
@@ -457,6 +478,36 @@ export async function deleteEntityWithBackup(
        VALUES ($1, $2, $3, $4)`,
       [type, id, JSON.stringify(snapshot), actor.id]
     );
+
+    // A SOP takes its domains, frameworks, controls and tests with it. Each
+    // is snapshotted like the SOP itself, then deleted children-first.
+    if (type === "sop") {
+      const tiers: { entity: string; table: string; ids: string }[] = [
+        { entity: "check", table: "checks", ids: SOP_TESTS_SQL },
+        { entity: "control", table: "controls", ids: SOP_CONTROLS_SQL },
+        { entity: "framework", table: "frameworks", ids: SOP_FRAMEWORKS_SQL },
+        { entity: "domain", table: "domains", ids: SOP_DOMAINS_SQL },
+      ];
+      for (const t of tiers) {
+        const rows = (
+          await client.query(`SELECT * FROM ${t.table} WHERE id IN (${t.ids})`, [id])
+        ).rows;
+        for (const r of rows) {
+          await client.query(
+            `INSERT INTO deleted_records (entity_type, entity_id, snapshot, deleted_by)
+             VALUES ($1, $2, $3, $4)`,
+            [t.entity, r.id, JSON.stringify(r), actor.id]
+          );
+        }
+      }
+      await client.query(
+        `DELETE FROM control_links WHERE control_id IN (${SOP_CONTROLS_SQL})`,
+        [id]
+      );
+      for (const t of tiers) {
+        await client.query(`DELETE FROM ${t.table} WHERE id IN (${t.ids})`, [id]);
+      }
+    }
 
     // Polymorphic links (control_links.entity_type/entity_id) aren't real
     // FKs, so nothing cascades them automatically.
