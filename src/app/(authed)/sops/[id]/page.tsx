@@ -35,6 +35,7 @@ import {
   linkFrameworkToSopAction,
   unlinkFrameworkFromSopAction,
 } from "@/features/sops/linkActions";
+import { restoreSopAction } from "@/features/sops/restoreAction";
 import {
   listSopFeedback,
   sopFeedbackCountBySection,
@@ -311,6 +312,28 @@ export default async function SopDetailPage({
           The old `&& !locked` here duplicated that check incorrectly and
           hid Archive along with everything else, so an approved SOP had
           no visible actions for anyone, admin included. */}
+      {/* Undo an archive — admin only (see restoreSopAction). */}
+      {sop.status === "archived" && user.role === "admin" && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 mb-4">
+          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">
+            Available actions
+          </h3>
+          <form action={restoreSopAction}>
+            <input type="hidden" name="id" value={sop.id} />
+            <button
+              type="submit"
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium"
+            >
+              Restore (un-archive)
+            </button>
+          </form>
+          <p className="text-xs text-gray-500 mt-3">
+            Puts this SOP back to Approved, so it can be audited again. The original
+            approval is kept and the restore is recorded in the approval history.
+          </p>
+        </div>
+      )}
+
       {transitions.length > 0 && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 mb-4">
           <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">
@@ -947,6 +970,7 @@ function friendlyAction(action: string): { label: string; tone: string } {
   if (action === "sop:returned_to_be")           return { label: "Rejected → returned to BE", tone: "bg-red-50 text-red-700" };
   if (action === "sop:approved")                 return { label: "Final Approved 🔒", tone: "bg-emerald-50 text-emerald-700" };
   if (action === "sop:archived")                 return { label: "Archived", tone: "bg-gray-100 text-gray-700" };
+  if (action === "sop:restored")                 return { label: "Restored from archive", tone: "bg-emerald-50 text-emerald-700" };
   if (action === "sop:attachment_updated")       return { label: "Attachment updated", tone: "bg-indigo-50 text-indigo-700" };
   if (action === "sop:attachment_removed")       return { label: "Attachment removed", tone: "bg-gray-100 text-gray-600" };
   if (action === "sop:link_updated")             return { label: "Link updated", tone: "bg-indigo-50 text-indigo-700" };
