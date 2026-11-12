@@ -116,6 +116,7 @@ export default async function NewAuditPage() {
           (t) =>
             t.control_id != null && scopedIds.controlIds.includes(t.control_id)
         ),
+        sopDepartments: fullGraph.sopDepartments,
       }
     : fullGraph;
 

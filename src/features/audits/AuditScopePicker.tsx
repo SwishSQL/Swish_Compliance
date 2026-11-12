@@ -68,6 +68,23 @@ export default function AuditScopePicker({
   // joins the selection.
   const effectiveScopeType: ScopeType = sopIds.length > 1 ? "full_sop" : scopeType;
 
+  // Department match, mirroring inDepartmentSql() in scope.ts: a domain or
+  // framework's own department decides when it has one; with none, it
+  // follows the departments of its SOP.
+  const sopDepts = useMemo(() => {
+    const m = new Map<number, Set<number>>();
+    for (const r of graph.sopDepartments) {
+      if (!m.has(r.sop_id)) m.set(r.sop_id, new Set());
+      m.get(r.sop_id)!.add(r.department_id);
+    }
+    return m;
+  }, [graph.sopDepartments]);
+  const inDept = (own: number | null, sop: number | null): boolean => {
+    if (!deptNum) return false;
+    if (own != null) return own === deptNum;
+    return sop != null && (sopDepts.get(sop)?.has(deptNum) ?? false);
+  };
+
   // Only offer policies that actually have auditable content for this
   // department. Deliberately NOT filtered on sops.department_id: a SOP is
   // filed under its owning department but can govern domains elsewhere —
@@ -77,25 +94,27 @@ export default function AuditScopePicker({
     if (!deptNum) return [];
     const sopIdsWithContent = new Set(
       graph.domains
-        .filter((d) => d.department_id === deptNum && d.sop_id != null)
+        .filter((d) => d.sop_id != null && inDept(d.department_id, d.sop_id))
         .map((d) => d.sop_id as number)
     );
     for (const f of graph.frameworks) {
-      if (f.department_id === deptNum && f.sop_id != null) {
+      if (f.sop_id != null && inDept(f.department_id, f.sop_id)) {
         sopIdsWithContent.add(f.sop_id);
       }
     }
     return policies.filter((p) => sopIdsWithContent.has(p.id));
-  }, [policies, graph.domains, graph.frameworks, deptNum]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [policies, graph.domains, graph.frameworks, deptNum, sopDepts]);
 
   // Domains belonging to the single selected SOP *and* the audited
   // department. Only meaningful in the single-SOP case.
   const availableDomains = useMemo(() => {
     if (!singleSop || !deptNum) return [];
     return graph.domains.filter(
-      (d) => d.sop_id === singleSop && d.department_id === deptNum
+      (d) => d.sop_id === singleSop && inDept(d.department_id, d.sop_id)
     );
-  }, [graph.domains, singleSop, deptNum]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graph.domains, singleSop, deptNum, sopDepts]);
 
   // A framework qualifies through its own SOP/department, or inherits them
   // from its parent domain — mirrors the COALESCE in resolveScope().
@@ -113,9 +132,9 @@ export default function AuditScopePicker({
   };
 
   const frameworkMatchesSingle = useMemo(() => {
-    return (f: ScopeGraphFramework) => sopOf(f) === singleSop && deptOf(f) === deptNum;
+    return (f: ScopeGraphFramework) => sopOf(f) === singleSop && inDept(deptOf(f), sopOf(f));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [domainById, singleSop, deptNum]);
+  }, [domainById, singleSop, deptNum, sopDepts]);
 
   const availableFrameworks = useMemo(() => {
     if (!singleSop || !deptNum) return [];
@@ -151,7 +170,7 @@ export default function AuditScopePicker({
       // Full SOP Audit across every selected SOP, unioned.
       const sopSet = new Set(sopIds);
       frameworks = graph.frameworks.filter(
-        (f) => deptOf(f) === deptNum && sopOf(f) != null && sopSet.has(sopOf(f)!)
+        (f) => sopOf(f) != null && sopSet.has(sopOf(f)!) && inDept(deptOf(f), sopOf(f))
       );
     } else if (scopeType === "framework") {
       frameworks = frameworkId
