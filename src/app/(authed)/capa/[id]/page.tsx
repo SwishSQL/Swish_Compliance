@@ -179,6 +179,23 @@ export default async function CapaDetailPage({
                 ? `${auditor.test_code} · ${auditor.test_name ?? ""}`
                 : "—"}
             </Field>
+            <Field label="Achievement">
+              {auditor.performance_percent != null ? (
+                <span
+                  className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800"
+                  title={`Yes ${auditor.yes_percent ?? 0}% · No ${auditor.no_percent ?? 0}% · N/A ${auditor.na_percent ?? 0}%`}
+                >
+                  {auditor.performance_percent}% achieved
+                </span>
+              ) : (
+                "—"
+              )}
+              {(auditor.na_percent ?? 0) > 0 && (
+                <span className="ml-2 text-xs text-gray-400">
+                  ({auditor.na_percent}% N/A excluded)
+                </span>
+              )}
+            </Field>
           </dl>
 
           <div className="border-t border-gray-100 pt-4 space-y-4">

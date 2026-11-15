@@ -72,8 +72,11 @@ export default async function CapaPage({
     ? findingsAll
     : findingsAll.filter(
         (f) =>
-          f.audit_department_id != null &&
-          scope.departmentIds.includes(f.audit_department_id)
+          // A CAPA assigned to this user is always theirs to see, even when
+          // the audit was in another department.
+          f.capa_assigned_to === user.id ||
+          (f.audit_department_id != null &&
+            scope.departmentIds.includes(f.audit_department_id))
       );
   const fullVisibility = scope.full;
   const scopedDepartmentId = fullVisibility ? undefined : -1; // hides dept filter dropdown
