@@ -108,6 +108,14 @@ export default async function ControlDetailPage({
         [id]
       )
     : [];
+  const checks = canEdit
+    ? await queryAll<{ id: number; name: string }>(
+        `SELECT TOP (50) id, name FROM checks WHERE id NOT IN (
+           SELECT entity_id FROM control_links WHERE control_id = $1 AND entity_type = 'check'
+         ) ORDER BY name`,
+        [id]
+      )
+    : [];
   // Tests not yet under this control — candidates for "Link test". Linking
   // sets checks.control_id, which is what audit scoping reads.
   const linkableTests = canEdit
@@ -478,6 +486,21 @@ export default async function ControlDetailPage({
                   <label className="block text-xs font-medium text-gray-600 mb-1.5">Add SOP</label>
                   <select name="entity_id" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
                     {sops.map((s) => (<option key={s.id} value={s.id}>{s.title}</option>))}
+                  </select>
+                </div>
+                <button type="submit" className="bg-brand-700 hover:bg-brand-800 text-white px-3 py-2 rounded-lg text-sm">Link</button>
+              </form>
+            )}
+            {checks.length > 0 && (
+              <form action={linkControlAction} className="flex items-end gap-2">
+                <input type="hidden" name="control_id" value={ctrl.id} />
+                <input type="hidden" name="entity_type" value="check" />
+                <div className="flex-1">
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">
+                    Add check (reference link, not counted in audits)
+                  </label>
+                  <select name="entity_id" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+                    {checks.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
                   </select>
                 </div>
                 <button type="submit" className="bg-brand-700 hover:bg-brand-800 text-white px-3 py-2 rounded-lg text-sm">Link</button>
