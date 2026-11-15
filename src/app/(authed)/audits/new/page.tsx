@@ -13,8 +13,15 @@ import { loadScopeGraph } from "@/features/audits/scope";
  * controls, tests, checklists and questions underneath load automatically.
  * Nothing below the framework is ever chosen by hand.
  */
-export default async function NewAuditPage() {
+export default async function NewAuditPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string; framework?: string }>;
+}) {
   const user = await requireUser();
+  const sp = await searchParams;
+  const frameworkParam = sp.framework && /^\d+$/.test(sp.framework) ? sp.framework : null;
+  const controlsHref = frameworkParam ? `/controls?framework=${frameworkParam}` : "/controls";
   // Access scoping (user spec): whoever creates audits only sees the
   // brands / departments / domains (and their frameworks/controls/tests)
   // they have access to. Full-visibility roles see everything.
@@ -132,6 +139,29 @@ export default async function NewAuditPage() {
           <h1 className="text-lg font-semibold text-gray-900 mb-5">
             Start a new audit
           </h1>
+          {sp.error === "no_tests" && (
+            <div
+              role="alert"
+              className="mb-5 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"
+            >
+              <p className="font-semibold">The audit wasn&apos;t created: this scope has no tests.</p>
+              <p className="mt-1">
+                The controls under the scope you picked have no tests linked to them, so there
+                would be nothing to audit.
+              </p>
+              <p className="mt-2 font-medium">How to avoid it:</p>
+              <ul className="mt-1 list-disc pl-5 space-y-0.5">
+                <li>Pick a different Policy / SOP or scope that already has tests, or</li>
+                <li>Link tests to the controls under this scope first, then create the audit again.</li>
+              </ul>
+              <a
+                href={controlsHref}
+                className="mt-3 inline-flex items-center rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700"
+              >
+                Go to controls to link tests →
+              </a>
+            </div>
+          )}
           <NewAuditForm
             action={createAuditAction}
             departments={departments}

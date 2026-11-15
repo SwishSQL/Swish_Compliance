@@ -201,10 +201,16 @@ export async function createAuditAction(formData: FormData) {
   });
 
   if (scope.tests.length === 0) {
-    throw new Error(
-      "This scope has no tests linked to it yet, so there would be nothing to audit. " +
-        "Pick a different scope, or link tests to the controls underneath it first."
-    );
+    // Not a crash: send the user back to the form with an explanation and a
+    // link to the controls that need tests (a thrown error would show the
+    // generic "Application error" page in production).
+    const fw =
+      scopeType === "framework" && parsed.framework_id
+        ? parsed.framework_id
+        : scope.frameworkIds.length === 1
+        ? scope.frameworkIds[0]
+        : null;
+    redirect(`/audits/new?error=no_tests${fw ? `&framework=${fw}` : ""}`);
   }
 
   // A Framework Audit pins one framework; the broader types cover many, so
