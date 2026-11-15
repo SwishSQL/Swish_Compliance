@@ -187,10 +187,10 @@ export default async function FrameworkDetailPage({
       )}
 
       {canLink && (linkableSops.length > 0 || linkableDomains.length > 0) && (
-        <details className="group bg-white rounded-2xl border border-gray-200 shadow-sm mb-4">
+        <details open className="group bg-white rounded-2xl border-2 border-brand-200 shadow-sm mb-4">
           <summary className="cursor-pointer list-none px-4 py-3 flex items-center gap-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
             <span className="transition-transform group-open:rotate-90 text-gray-400">▶</span>
-            🔗 Link SOP / domain
+            🔗 Link a SOP or domain to this framework
           </summary>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 px-4 pb-4 pt-3 border-t border-gray-100">
             {linkableSops.length > 0 && (
