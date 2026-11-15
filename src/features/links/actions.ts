@@ -38,6 +38,22 @@ export async function linkControlToFrameworkAction(formData: FormData) {
   revalidatePath(`/frameworks/${frameworkId}`);
   revalidatePath(`/controls/${controlId}`);
   revalidatePath("/controls");
+  // Also used from the domain page (control → one of the domain's frameworks).
+  const domainId = Number(formData.get("domain_id"));
+  if (Number.isInteger(domainId) && domainId > 0) revalidatePath(`/domains/${domainId}`);
+}
+
+export async function linkFrameworkToDomainAction(formData: FormData) {
+  await requireEditor();
+  const [domainId, frameworkId] = ids(formData, "domain_id", "framework_id");
+  await execute(
+    `UPDATE frameworks SET domain_id = $1, updated_at = SYSUTCDATETIME() WHERE id = $2`,
+    [domainId, frameworkId]
+  );
+  revalidatePath(`/domains/${domainId}`);
+  revalidatePath(`/frameworks/${frameworkId}`);
+  revalidatePath("/domains");
+  revalidatePath("/frameworks");
 }
 
 export async function linkTestToControlAction(formData: FormData) {

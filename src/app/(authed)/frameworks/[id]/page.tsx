@@ -1,7 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser, canAccessAdmin, canDeleteOrArchive, canEditSops } from "@/lib/auth/guard";
-import { linkControlToFrameworkAction } from "@/features/links/actions";
+import {
+  linkControlToFrameworkAction,
+  linkFrameworkToDomainAction,
+} from "@/features/links/actions";
+import {
+  linkFrameworkToSopAction,
+  unlinkFrameworkFromSopAction,
+} from "@/features/sops/linkActions";
 import DeleteEntityButton from "@/features/admin/delete/DeleteEntityButton";
 import Workspace from "@/features/shell/Workspace";
 import { getFramework } from "@/features/frameworks/repository";
@@ -43,22 +50,47 @@ export default async function FrameworkDetailPage({
     [id]
   );
 
-  // Cross-references (user spec): SOPs whose home domain is this
-  // framework's domain (one-home-domain-per-SOP model) + their departments.
-  const fwSops = await queryAll<{ id: number; code: string | null; title: string }>(
-    `SELECT s.id, s.code, s.title
-     FROM sops s
-     WHERE s.home_domain_id = (SELECT domain_id FROM frameworks WHERE id = $1)
+  // Cross-references: the same rule the SOP page and audit scoping use —
+  // a SOP belongs to this framework when the framework names it
+  // (frameworks.sop_id), its domain names it (domains.sop_id), or the
+  // framework's domain is the SOP's home domain.
+  // `direct` = linked via frameworks.sop_id, the link this page can remove.
+  const FW_SOP_IDS = `SELECT s.id FROM sops s
+     JOIN frameworks f ON f.id = $1
+     LEFT JOIN domains d ON d.id = f.domain_id
+     WHERE s.id = f.sop_id OR s.id = d.sop_id OR s.home_domain_id = f.domain_id`;
+  const fwSops = await queryAll<{ id: number; code: string | null; title: string; direct: number }>(
+    `SELECT s.id, s.code, s.title,
+            CASE WHEN s.id = (SELECT sop_id FROM frameworks WHERE id = $1) THEN 1 ELSE 0 END AS direct
+     FROM sops s WHERE s.id IN (${FW_SOP_IDS})
      ORDER BY CASE WHEN s.code IS NULL THEN 1 ELSE 0 END, s.code, s.title`,
     [id]
   );
   const fwDepartments = await queryAll<{ id: number; name: string }>(
     `SELECT DISTINCT d.id, d.name
      FROM sops s JOIN departments d ON d.id = s.department_id
-     WHERE s.home_domain_id = (SELECT domain_id FROM frameworks WHERE id = $1)
+     WHERE s.id IN (${FW_SOP_IDS})
      ORDER BY d.name`,
     [id]
   );
+
+  // "Link SOP" (only while the framework names none) and "Link domain".
+  const hasDirectSop = fwSops.some((s) => s.direct === 1);
+  const linkableSops =
+    canLink && !hasDirectSop
+      ? await queryAll<{ id: number; code: string | null; title: string }>(
+          `SELECT id, code, title FROM sops WHERE status <> 'archived'
+           ORDER BY CASE WHEN code IS NULL THEN 1 ELSE 0 END, code, title`
+        )
+      : [];
+  const linkableDomains = canLink
+    ? await queryAll<{ id: number; name: string }>(
+        `SELECT id, name FROM domains
+         WHERE is_active = 1 AND id <> COALESCE((SELECT domain_id FROM frameworks WHERE id = $1), 0)
+         ORDER BY name`,
+        [id]
+      )
+    : [];
 
   return (
     <Workspace
@@ -154,6 +186,49 @@ export default async function FrameworkDetailPage({
         </div>
       )}
 
+      {canLink && (linkableSops.length > 0 || linkableDomains.length > 0) && (
+        <details className="group bg-white rounded-2xl border border-gray-200 shadow-sm mb-4">
+          <summary className="cursor-pointer list-none px-4 py-3 flex items-center gap-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+            <span className="transition-transform group-open:rotate-90 text-gray-400">▶</span>
+            🔗 Link SOP / domain
+          </summary>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 px-4 pb-4 pt-3 border-t border-gray-100">
+            {linkableSops.length > 0 && (
+              <form action={linkFrameworkToSopAction} className="flex items-end gap-2">
+                <input type="hidden" name="target_id" value={fw.id} />
+                <div className="flex-1 min-w-0">
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Link SOP</label>
+                  <select name="sop_id" required defaultValue="" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+                    <option value="" disabled>Choose a SOP…</option>
+                    {linkableSops.map((s) => (
+                      <option key={s.id} value={s.id}>{s.code ? `${s.code} — ` : ""}{s.title}</option>
+                    ))}
+                  </select>
+                </div>
+                <button type="submit" className="bg-brand-700 hover:bg-brand-800 text-white px-3 py-2 rounded-lg text-sm">Link</button>
+              </form>
+            )}
+            {linkableDomains.length > 0 && (
+              <form action={linkFrameworkToDomainAction} className="flex items-end gap-2">
+                <input type="hidden" name="framework_id" value={fw.id} />
+                <div className="flex-1 min-w-0">
+                  <label className="block text-xs font-medium text-gray-600 mb-1.5">
+                    {domain ? `Move to another domain (now: ${domain.name})` : "Link domain"}
+                  </label>
+                  <select name="domain_id" required defaultValue="" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+                    <option value="" disabled>Choose a domain…</option>
+                    {linkableDomains.map((d) => (
+                      <option key={d.id} value={d.id}>{d.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <button type="submit" className="bg-brand-700 hover:bg-brand-800 text-white px-3 py-2 rounded-lg text-sm">Link</button>
+              </form>
+            )}
+          </div>
+        </details>
+      )}
+
       {/* Linked controls */}
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
         <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
@@ -239,10 +314,17 @@ export default async function FrameworkDetailPage({
           <ul className="border-t border-gray-100 divide-y divide-gray-100">
             {fwSops.length === 0 && <li className="px-4 py-3 text-xs text-gray-400">No linked SOPs.</li>}
             {fwSops.map((s) => (
-              <li key={s.id} className="px-4 py-2 text-sm">
+              <li key={s.id} className="px-4 py-2 text-sm flex items-center justify-between gap-3">
                 <Link href={`/sops/${s.id}`} className="text-brand-700 hover:underline">
                   {s.title}
                 </Link>
+                {canLink && s.direct === 1 && (
+                  <form action={unlinkFrameworkFromSopAction}>
+                    <input type="hidden" name="sop_id" value={s.id} />
+                    <input type="hidden" name="target_id" value={fw.id} />
+                    <button type="submit" className="text-xs text-red-600 hover:underline">Unlink</button>
+                  </form>
+                )}
               </li>
             ))}
           </ul>

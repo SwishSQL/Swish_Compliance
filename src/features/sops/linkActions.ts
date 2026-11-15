@@ -55,6 +55,8 @@ async function setLink(formData: FormData, kind: Kind, link: boolean) {
   );
   revalidatePath(`/sops/${sopId}`);
   revalidatePath(`/${TABLE[kind]}`);
+  // The same link is now also made from the domain / framework page.
+  revalidatePath(`/${TABLE[kind]}/${targetId}`);
 }
 
 export async function linkDomainToSopAction(formData: FormData) {
