@@ -21,6 +21,7 @@ import {
 } from "@/features/controls/types";
 import { queryAll, queryOne } from "@/lib/db";
 import AssignTestModal from "@/features/checks/AssignTestModal";
+import { linkTestToControlAction } from "@/features/links/actions";
 import { listOrgUnitOptions } from "@/features/org-units/repository";
 
 export default async function ControlDetailPage({
@@ -107,11 +108,16 @@ export default async function ControlDetailPage({
         [id]
       )
     : [];
-  const checks = canEdit
-    ? await queryAll<{ id: number; name: string }>(
-        `SELECT TOP (50) id, name FROM checks WHERE id NOT IN (
-           SELECT entity_id FROM control_links WHERE control_id = $1 AND entity_type = 'check'
-         ) ORDER BY name`,
+  // Tests not yet under this control — candidates for "Link test". Linking
+  // sets checks.control_id, which is what audit scoping reads.
+  const linkableTests = canEdit
+    ? await queryAll<{ id: number; code: string | null; name: string; control_name: string | null }>(
+        `SELECT ch.id, ch.code, ch.name, c.name AS control_name
+         FROM checks ch
+         LEFT JOIN controls c ON c.id = ch.control_id
+         WHERE ch.is_active = 1 AND (ch.control_id IS NULL OR ch.control_id <> $1)
+         ORDER BY CASE WHEN ch.control_id IS NULL THEN 0 ELSE 1 END,
+                  CASE WHEN ch.code IS NULL THEN 1 ELSE 0 END, ch.code, ch.name`,
         [id]
       )
     : [];
@@ -364,7 +370,7 @@ export default async function ControlDetailPage({
       {/* Tests under this control — each test is a dropdown; clicking it
           expands its details inline (user spec: reduce page navigation).
           checks.control_id is how the ECS GRC import wires them. */}
-      {directChecks.length > 0 && (
+      {(directChecks.length > 0 || canEdit) && (
         <div className="mb-3">
           <div className="flex items-center justify-between mb-2 px-1">
             <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
@@ -374,6 +380,33 @@ export default async function ControlDetailPage({
               View all →
             </Link>
           </div>
+          {canEdit && linkableTests.length > 0 && (
+            <form
+              action={linkTestToControlAction}
+              className="mb-2 bg-white rounded-2xl border border-gray-200 shadow-sm px-4 py-3 flex flex-wrap items-end gap-2"
+            >
+              <input type="hidden" name="control_id" value={ctrl.id} />
+              <div className="flex-1 min-w-[240px]">
+                <label className="block text-xs font-medium text-gray-600 mb-1.5">
+                  Link an existing test to this control
+                </label>
+                <select name="check_id" required className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+                  {linkableTests.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.code ? `${t.code} — ` : ""}{t.name}
+                      {t.control_name ? ` (moves from: ${t.control_name})` : " (unassigned)"}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button type="submit" className="bg-brand-700 hover:bg-brand-800 text-white px-3 py-2 rounded-lg text-sm">
+                🔗 Link test
+              </button>
+            </form>
+          )}
+          {directChecks.length === 0 && (
+            <p className="px-1 text-sm text-gray-400">No tests under this control yet.</p>
+          )}
           <div className="space-y-2">
             {directChecks.map((t) => (
               <details
@@ -445,19 +478,6 @@ export default async function ControlDetailPage({
                   <label className="block text-xs font-medium text-gray-600 mb-1.5">Add SOP</label>
                   <select name="entity_id" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
                     {sops.map((s) => (<option key={s.id} value={s.id}>{s.title}</option>))}
-                  </select>
-                </div>
-                <button type="submit" className="bg-brand-700 hover:bg-brand-800 text-white px-3 py-2 rounded-lg text-sm">Link</button>
-              </form>
-            )}
-            {checks.length > 0 && (
-              <form action={linkControlAction} className="flex items-end gap-2">
-                <input type="hidden" name="control_id" value={ctrl.id} />
-                <input type="hidden" name="entity_type" value="check" />
-                <div className="flex-1">
-                  <label className="block text-xs font-medium text-gray-600 mb-1.5">Add check</label>
-                  <select name="entity_id" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
-                    {checks.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
                   </select>
                 </div>
                 <button type="submit" className="bg-brand-700 hover:bg-brand-800 text-white px-3 py-2 rounded-lg text-sm">Link</button>

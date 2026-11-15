@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser } from "@/lib/auth/guard";
+import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { linkChecklistToTestAction } from "@/features/links/actions";
 import Workspace from "@/features/shell/Workspace";
 import {
   getCheck,
@@ -38,6 +39,13 @@ export default async function CheckDetailPage({
      WHERE is_active = 1
      ORDER BY name`
   );
+
+  // "Link checklist" candidates: active checklists not already linked.
+  const canLink = canEditSops(user.role);
+  const linkedTemplateIds = new Set(linkedItems.map((i) => i.template_id));
+  const linkableChecklists = canLink
+    ? checklists.filter((cl) => !linkedTemplateIds.has(cl.id))
+    : [];
 
   // Lineage for the header: this test's control → framework → domain.
   const lineage = check.control_id
@@ -199,6 +207,30 @@ export default async function CheckDetailPage({
             )}
           </div>
         </div>
+      )}
+
+      {canLink && linkableChecklists.length > 0 && (
+        <form
+          action={linkChecklistToTestAction}
+          className="mb-3 bg-white rounded-2xl border border-gray-200 shadow-sm px-4 py-3 flex flex-wrap items-end gap-2"
+        >
+          <input type="hidden" name="check_id" value={check.id} />
+          <div className="flex-1 min-w-[240px]">
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">
+              Link a checklist to this test
+            </label>
+            <select name="template_id" required className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+              {linkableChecklists.map((cl) => (
+                <option key={cl.id} value={cl.id}>
+                  {cl.name}{cl.category ? ` (${cl.category})` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button type="submit" className="bg-brand-700 hover:bg-brand-800 text-white px-3 py-2 rounded-lg text-sm">
+            🔗 Link checklist
+          </button>
+        </form>
       )}
 
       {/* Linked checklists — each checklist is a dropdown; clicking it

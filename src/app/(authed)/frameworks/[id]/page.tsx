@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser, canAccessAdmin, canDeleteOrArchive } from "@/lib/auth/guard";
+import { requireUser, canAccessAdmin, canDeleteOrArchive, canEditSops } from "@/lib/auth/guard";
+import { linkControlToFrameworkAction } from "@/features/links/actions";
 import DeleteEntityButton from "@/features/admin/delete/DeleteEntityButton";
 import Workspace from "@/features/shell/Workspace";
 import { getFramework } from "@/features/frameworks/repository";
@@ -21,6 +22,19 @@ export default async function FrameworkDetailPage({
   if (!fw) notFound();
   const controls = await listControls({ framework_id: id });
   const isAdmin = canAccessAdmin(user.role);
+  const canLink = canEditSops(user.role);
+  // Controls not yet under this framework — candidates for "Link control".
+  const linkableControls = canLink
+    ? await queryAll<{ id: number; code: string | null; name: string; framework_name: string | null }>(
+        `SELECT c.id, c.code, c.name, f.name AS framework_name
+         FROM controls c
+         LEFT JOIN frameworks f ON f.id = c.framework_id
+         WHERE c.is_active = 1 AND (c.framework_id IS NULL OR c.framework_id <> $1)
+         ORDER BY CASE WHEN c.framework_id IS NULL THEN 0 ELSE 1 END,
+                  CASE WHEN c.code IS NULL THEN 1 ELSE 0 END, c.code, c.name`,
+        [id]
+      )
+    : [];
 
   // Lineage: which domain this framework belongs to.
   const domain = await queryOne<{ id: number; name: string }>(
@@ -153,6 +167,30 @@ export default async function FrameworkDetailPage({
             + Add control
           </Link>
         </div>
+        {canLink && linkableControls.length > 0 && (
+          <form
+            action={linkControlToFrameworkAction}
+            className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex flex-wrap items-end gap-2"
+          >
+            <input type="hidden" name="framework_id" value={fw.id} />
+            <div className="flex-1 min-w-[240px]">
+              <label className="block text-xs font-medium text-gray-600 mb-1.5">
+                Link an existing control to this framework
+              </label>
+              <select name="control_id" required className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+                {linkableControls.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.code ? `${c.code} — ` : ""}{c.name}
+                    {c.framework_name ? ` (moves from: ${c.framework_name})` : " (unassigned)"}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button type="submit" className="bg-brand-700 hover:bg-brand-800 text-white px-3 py-2 rounded-lg text-sm">
+              🔗 Link control
+            </button>
+          </form>
+        )}
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-gray-600 text-xs uppercase tracking-wider">
             <tr>
