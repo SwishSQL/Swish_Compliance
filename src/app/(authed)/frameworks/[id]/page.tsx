@@ -38,7 +38,7 @@ export default async function FrameworkDetailPage({
          LEFT JOIN frameworks f ON f.id = c.framework_id
          WHERE c.is_active = 1 AND (c.framework_id IS NULL OR c.framework_id <> $1)
          ORDER BY CASE WHEN c.framework_id IS NULL THEN 0 ELSE 1 END,
-                  CASE WHEN c.code IS NULL THEN 1 ELSE 0 END, c.code, c.name`,
+                  CASE WHEN c.code IS NULL OR c.code = '' THEN 0 ELSE 1 END, c.code, c.name`,
         [id]
       )
     : [];
@@ -255,7 +255,7 @@ export default async function FrameworkDetailPage({
               <select name="control_id" required className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
                 {linkableControls.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.code ? `${c.code} — ` : ""}{c.name}
+                    {c.code ? `${c.code} — ` : "[No ID] "}{c.name}
                     {c.framework_name ? ` (moves from: ${c.framework_name})` : " (unassigned)"}
                   </option>
                 ))}

@@ -125,7 +125,7 @@ export default async function ControlDetailPage({
          LEFT JOIN controls c ON c.id = ch.control_id
          WHERE ch.is_active = 1 AND (ch.control_id IS NULL OR ch.control_id <> $1)
          ORDER BY CASE WHEN ch.control_id IS NULL THEN 0 ELSE 1 END,
-                  CASE WHEN ch.code IS NULL THEN 1 ELSE 0 END, ch.code, ch.name`,
+                  CASE WHEN ch.code IS NULL OR ch.code = '' THEN 0 ELSE 1 END, ch.code, ch.name`,
         [id]
       )
     : [];
@@ -401,7 +401,7 @@ export default async function ControlDetailPage({
                 <select name="check_id" required className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
                   {linkableTests.map((t) => (
                     <option key={t.id} value={t.id}>
-                      {t.code ? `${t.code} — ` : ""}{t.name}
+                      {t.code ? `${t.code} — ` : "[No ID] "}{t.name}
                       {t.control_name ? ` (moves from: ${t.control_name})` : " (unassigned)"}
                     </option>
                   ))}
