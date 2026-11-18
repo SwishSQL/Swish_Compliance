@@ -56,7 +56,7 @@ export default async function CapaPage({
   // Access scoping: admin/compliance/BE see everything; everyone else
   // (incl. department managers) is scoped to their mapped department(s)
   // from the junction. Filtered in-memory to support multi-department.
-  const scope = await getUserScope(user.id, user.role);
+  const scope = await getUserScope(user.id, user);
 
   const findingsAll = await listAuditFindings({
     audit_id: sp.audit_id ? Number(sp.audit_id) : undefined,

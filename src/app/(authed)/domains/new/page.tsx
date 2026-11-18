@@ -1,13 +1,13 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { queryAll } from "@/lib/db";
 import { createDomainAction } from "@/features/domains/actions";
 
 export default async function NewDomainPage() {
-  const user = await requireUser();
-  if (!canEditSops(user.role)) redirect("/domains");
+  const user = await requirePermission("grc.view");
+  if (!canEditSops(user)) redirect("/domains");
 
   const [sops, departments] = await Promise.all([
     queryAll<{ id: number; code: string | null; title: string }>(

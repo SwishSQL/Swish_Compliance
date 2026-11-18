@@ -12,7 +12,7 @@ type Search = { view?: string; q?: string; status?: string };
 export default async function SopFeedbackPage({ searchParams }: { searchParams: Promise<Search> }) {
   const user = await requireUser();
   const sp = await searchParams;
-  const triage = canTriageSopFeedback(user.role);
+  const triage = canTriageSopFeedback(user);
   const view: FeedbackView = sp.view === "mine" ? "mine" : "all";
   const status = sp.status ?? (view === "all" ? "Open" : "");
 

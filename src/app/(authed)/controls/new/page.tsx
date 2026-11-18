@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canEditSops } from "@/lib/auth/guard";
 import { redirect } from "next/navigation";
 import Workspace from "@/features/shell/Workspace";
 import { queryAll } from "@/lib/db";
@@ -11,8 +11,8 @@ export default async function NewControlPage({
 }: {
   searchParams: Promise<{ framework?: string }>;
 }) {
-  const user = await requireUser();
-  if (!canEditSops(user.role)) redirect("/controls");
+  const user = await requirePermission("grc.view");
+  if (!canEditSops(user)) redirect("/controls");
   const sp = await searchParams;
   const presetFramework = sp.framework ? Number(sp.framework) : null;
 

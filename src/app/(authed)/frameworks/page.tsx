@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { listFrameworks } from "@/features/frameworks/repository";
 import { getUserScope, getScopedIds } from "@/lib/auth/access";
@@ -16,12 +16,12 @@ type Search = {
 };
 
 export default async function FrameworksPage({ searchParams }: { searchParams: Promise<Search> }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const sp = await searchParams;
   const [allFrameworks, lin] = await Promise.all([listFrameworks(), loadLineage()]);
   // Access scoping: non-privileged users only see frameworks in their
   // mapped domains.
-  const scope = await getUserScope(user.id, user.role);
+  const scope = await getUserScope(user.id, user);
   const scopedIds = await getScopedIds(scope);
   const scoped = scopedIds
     ? allFrameworks.filter((f) => scopedIds.frameworkIds.includes(f.id))
@@ -58,7 +58,7 @@ export default async function FrameworksPage({ searchParams }: { searchParams: P
       sessionLabel="Session"
       userLabel={user.displayName}
     >
-      {canEditSops(user.role) && (
+      {canEditSops(user) && (
         <div className="flex justify-end mb-4">
           <Link
             href="/frameworks/new"

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser, canEditSops, canDeleteOrArchive } from "@/lib/auth/guard";
+import { requirePermission, canEditSops, canDeleteOrArchive } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import {
   listDomains,
@@ -14,7 +14,7 @@ import { domainMatches, idParam, loadLineage } from "@/features/filters/lineage"
 type Search = { search?: string; status?: string; department?: string; brand?: string };
 
 export default async function DomainsPage({ searchParams }: { searchParams: Promise<Search> }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const sp = await searchParams;
   const [allDomains, frameworksByDomain, sopsByDomain, lin] = await Promise.all([
     listDomains(true),
@@ -24,7 +24,7 @@ export default async function DomainsPage({ searchParams }: { searchParams: Prom
   ]);
 
   // Access scoping: non-privileged users only see their mapped domains.
-  const scope = await getUserScope(user.id, user.role);
+  const scope = await getUserScope(user.id, user);
   const scoped = scope.full
     ? allDomains
     : allDomains.filter((d) => scope.domainIds.includes(d.id));
@@ -73,7 +73,7 @@ export default async function DomainsPage({ searchParams }: { searchParams: Prom
           Domains group frameworks by responsibility area. Click a domain to
           expand it and see every framework, SOP and department linked to it.
         </p>
-        {canEditSops(user.role) && (
+        {canEditSops(user) && (
           <Link
             href="/domains/new"
             className="shrink-0 inline-flex items-center gap-1.5 bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"
@@ -104,8 +104,8 @@ export default async function DomainsPage({ searchParams }: { searchParams: Prom
 
       <DomainAccordionGrid
         domains={domainsWithDetail}
-        canEdit={canEditSops(user.role)}
-        canDelete={canDeleteOrArchive(user.role)}
+        canEdit={canEditSops(user)}
+        canDelete={canDeleteOrArchive(user)}
       />
     </Workspace>
   );

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser, canEditSops, canDeleteOrArchive } from "@/lib/auth/guard";
+import { requirePermission, canEditSops, canDeleteOrArchive } from "@/lib/auth/guard";
 import DeleteEntityButton from "@/features/admin/delete/DeleteEntityButton";
 import Workspace from "@/features/shell/Workspace";
 import {
@@ -29,14 +29,14 @@ export default async function ControlDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const { id: idStr } = await params;
   const id = Number(idStr);
   const ctrl = await getControl(id);
   if (!ctrl) notFound();
   const links = await listControlLinks(id);
   const controlRates = (await listControlRates(id)).get(id);
-  const canEdit = canEditSops(user.role) || user.role === "compliance";
+  const canEdit = canEditSops(user);
 
   // Full lineage for the header — the domain comes via the framework.
   const lineage = ctrl.framework_id
@@ -165,7 +165,7 @@ export default async function ControlDetailPage({
             <h2 className="text-lg font-bold text-gray-900 mb-1">{ctrl.name}</h2>
             {ctrl.description && <p className="text-xs text-gray-600 max-w-3xl">{ctrl.description}</p>}
           </div>
-          {canDeleteOrArchive(user.role) && (
+          {canDeleteOrArchive(user) && (
             <DeleteEntityButton entityType="control" entityId={ctrl.id} label="Control" />
           )}
         </div>

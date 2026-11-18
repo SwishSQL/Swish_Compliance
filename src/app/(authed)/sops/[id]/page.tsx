@@ -12,7 +12,10 @@ import {
   availableTransitions,
   canEditSopFields,
   canManageSop,
+  canViewSop,
+  type SopActor,
 } from "@/features/sops/types";
+import { getUserScope } from "@/lib/auth/access";
 import {
   updateSopAttachmentAction,
   removeSopAttachmentAction,
@@ -68,9 +71,13 @@ export default async function SopDetailPage({
   const id = Number(idStr);
   const sop = await getSopById(id);
   if (!sop) notFound();
+  const scope = await getUserScope(user.id, user);
+  const actor: SopActor = { id: user.id, permissions: user.permissions, departmentIds: scope.departmentIds };
+  // Record-level access: a URL to another department's SOP is a 404.
+  if (!canViewSop({ ...actor, fullScope: scope.full }, sop)) notFound();
 
   const tab = sp.tab === "overview" || sp.tab === "feedback" ? sp.tab : "content";
-  const triage = canTriageSopFeedback(user.role);
+  const triage = canTriageSopFeedback(user);
   const fbView: FeedbackView = sp.view === "mine" ? "mine" : "all";
   const [fbCounts, fbRows, deptRows, myDeptRow] = await Promise.all([
     sopFeedbackCountBySection(id),
@@ -89,7 +96,7 @@ export default async function SopDetailPage({
   });
 
   const locked = isSopLocked(sop.status);
-  const transitions = availableTransitions(user.role, sop.status);
+  const transitions = availableTransitions(actor, sop);
   const events = await listSopEvents(id);
 
   // Cross-references (user spec): each SOP has ONE home domain (from its
@@ -113,7 +120,7 @@ export default async function SopDetailPage({
      ORDER BY f.name`,
     [id]
   );
-  const canLinkScope = canEditSops(user.role);
+  const canLinkScope = canEditSops(user);
   const shownDomainIds = new Set(sopDomains.map((d) => d.id));
   const shownFrameworkIds = new Set(sopFrameworks.map((f) => f.id));
   const linkableDomains = canLinkScope
@@ -138,12 +145,12 @@ export default async function SopDetailPage({
     ? await getAckStats(id)
     : { total_eligible: 0, acknowledged_count: 0, percent: 0 };
   const ackList =
-    isApproved && user.role === "admin" ? await listAcknowledgments(id, 50) : [];
+    isApproved && user.permissions.has("records.view_all") ? await listAcknowledgments(id, 50) : [];
 
   // Admin / Compliance / OPEX / BE and the owning department manager may
   // change the file and the external link at any status, and start a new
   // version of an approved SOP (user spec 2026-11-08).
-  const canEditAttachment = canManageSop(user.role, user.id, sop);
+  const canEditAttachment = canManageSop(actor, sop);
   const openRevision = sop.status === "approved" ? await getOpenRevision(sop.id) : undefined;
   const revisedFrom = sop.revision_of_id ? await getSopById(sop.revision_of_id) : undefined;
 
@@ -219,7 +226,7 @@ export default async function SopDetailPage({
               allows content edits (matches the canEditSopFields gate in
               the action). Locked statuses (approved / archived) hide it. */}
           <div className="ml-auto flex items-center gap-2">
-            {canEditSopFields(user.role, sop.status) && (
+            {canEditSopFields(actor, sop) && (
               <Link
                 href={`/sops/${sop.id}/edit`}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100"
@@ -256,7 +263,7 @@ export default async function SopDetailPage({
                 🔗 Link &amp; file
               </Link>
             )}
-            {canDeleteOrArchive(user.role) && (
+            {canDeleteOrArchive(user) && (
               <DeleteEntityButton entityType="sop" entityId={sop.id} label="SOP" />
             )}
           </div>
@@ -313,7 +320,7 @@ export default async function SopDetailPage({
           hid Archive along with everything else, so an approved SOP had
           no visible actions for anyone, admin included. */}
       {/* Undo an archive — admin only (see restoreSopAction). */}
-      {sop.status === "archived" && user.role === "admin" && (
+      {sop.status === "archived" && user.permissions.has("sop.archive") && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 mb-4">
           <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4">
             Available actions
@@ -458,7 +465,7 @@ export default async function SopDetailPage({
             </div>
 
             {/* Admin-only list of who acknowledged */}
-            {user.role === "admin" && ackList.length > 0 && (
+            {ackList.length > 0 && (
               <div className="mt-5 border-t border-gray-100 pt-4">
                 <div className="text-[10px] uppercase tracking-[0.2em] text-gray-400 font-semibold mb-2">
                   Who has acknowledged ({ackList.length})

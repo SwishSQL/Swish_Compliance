@@ -3,10 +3,11 @@ import { notFound } from "next/navigation";
 import { requireAdmin, USER_ROLES } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { queryAll } from "@/lib/db";
-import { getUserById } from "@/features/admin/users/repository";
+import { getUserById, getUserRoles, getOutstandingWork } from "@/features/admin/users/repository";
 import {
   updateUserAction,
   resetPasswordAction,
+  reassignWorkAction,
 } from "@/features/admin/users/actions";
 import MultiSelect from "@/features/admin/users/MultiSelect";
 
@@ -26,6 +27,20 @@ export default async function EditUserPage({
   );
 
   const isSelf = u.id === me.id;
+  const [roles, brands, work, activeUsers] = await Promise.all([
+    getUserRoles(u.id),
+    queryAll<{ id: number; name: string }>(
+      `SELECT id, name FROM brands WHERE is_active = 1 OR id = ANY($1) ORDER BY name`,
+      [u.brand_ids.length > 0 ? u.brand_ids : [-1]]
+    ),
+    getOutstandingWork(u.id),
+    queryAll<{ id: number; display_name: string }>(
+      `SELECT id, display_name FROM users WHERE is_active = 1 AND id <> $1 ORDER BY display_name`,
+      [u.id]
+    ),
+  ]);
+  const extraRoles = roles.filter((r) => r !== u.role);
+  const openWork = work.capas + work.audits + work.tests + work.sops;
 
   return (
     <Workspace
@@ -68,7 +83,7 @@ export default async function EditUserPage({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1.5">Role</label>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">Primary role</label>
             <select
               name="role"
               defaultValue={u.role}
@@ -86,6 +101,32 @@ export default async function EditUserPage({
             )}
           </div>
 
+
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">
+              Additional roles <span className="text-gray-400">(optional — a user can hold several)</span>
+            </label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {USER_ROLES.map((r) => (
+                <label key={r.value} className="flex items-start gap-2 p-2 border border-gray-200 rounded-lg text-sm cursor-pointer hover:bg-gray-50">
+                  <input
+                    type="checkbox"
+                    name="extra_roles"
+                    value={r.value}
+                    defaultChecked={extraRoles.includes(r.value)}
+                    disabled={isSelf}
+                    className="mt-0.5 accent-brand-700"
+                  />
+                  <span>
+                    <span className="font-medium text-gray-900">{r.label}</span>
+                    <span className="block text-xs text-gray-500">{r.desc}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <input type="hidden" name="department_ids__present" value="1" />
           <MultiSelect
             name="department_ids"
             label="Departments (multi-select)"
@@ -93,6 +134,15 @@ export default async function EditUserPage({
             defaultSelected={u.department_ids}
             placeholder="Select departments…"
           />
+          <input type="hidden" name="brand_ids__present" value="1" />
+          <MultiSelect
+            name="brand_ids"
+            label="Brands (optional — leave empty for all brands)"
+            options={brands}
+            defaultSelected={u.brand_ids}
+            placeholder="All brands"
+          />
+
           <p className="text-xs text-gray-500 -mt-2">
             Department defines what a non-privileged user can see — their
             domains, frameworks, controls and tests all follow from it
@@ -167,6 +217,33 @@ export default async function EditUserPage({
       <div className="text-xs text-gray-400 mt-4 px-2 flex gap-6">
         <span>Created: {new Date(u.created_at).toLocaleString()}</span>
         <span>Last login: {u.last_login_at ? new Date(u.last_login_at).toLocaleString() : "Never"}</span>
+      </div>
+      {/* Outstanding work — hand it over before deactivating (docs/RBAC.md §10). */}
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 mt-4">
+        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-2">
+          Outstanding work
+        </h3>
+        <p className="text-sm text-gray-600 mb-4">
+          {work.capas} open CAPA(s) · {work.audits} audit(s) to perform · {work.tests} test(s) owned ·{" "}
+          {work.sops} SOP(s) in the workflow
+        </p>
+        {openWork > 0 && (
+          <form action={reassignWorkAction} className="flex flex-wrap items-end gap-2">
+            <input type="hidden" name="from_user_id" value={u.id} />
+            <div className="flex-1 min-w-[240px]">
+              <label className="block text-xs font-medium text-gray-600 mb-1.5">Reassign all of it to</label>
+              <select name="to_user_id" required defaultValue="" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+                <option value="" disabled>Choose an active user…</option>
+                {activeUsers.map((x) => (
+                  <option key={x.id} value={x.id}>{x.display_name}</option>
+                ))}
+              </select>
+            </div>
+            <button type="submit" className="bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium">
+              Reassign work
+            </button>
+          </form>
+        )}
       </div>
     </Workspace>
   );

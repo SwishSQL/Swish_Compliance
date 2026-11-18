@@ -12,10 +12,13 @@ import { queryAll } from "@/lib/db";
  * scoped through its domain; SOPs/audits/CAPAs through department.
  */
 
-const FULL_VISIBILITY_ROLES = ["admin", "compliance", "business_excellence"];
-
-export function hasFullVisibility(role: string): boolean {
-  return FULL_VISIBILITY_ROLES.includes(role);
+/**
+ * Organisation-wide visibility is the `records.view_all` permission
+ * (System Admin, IBE Manager, Compliance, CEO and OPEX by default —
+ * docs/RBAC.md). Accepts the AuthUser from requireUser().
+ */
+export function hasFullVisibility(user: { permissions: ReadonlySet<string> }): boolean {
+  return user.permissions.has("records.view_all");
 }
 
 export type UserScope = {
@@ -49,9 +52,9 @@ export type UserScope = {
  */
 export async function getUserScope(
   userId: number,
-  role: string
+  user: { permissions: ReadonlySet<string> }
 ): Promise<UserScope> {
-  if (hasFullVisibility(role)) {
+  if (hasFullVisibility(user)) {
     return { full: true, departmentIds: [], domainIds: [], brandIds: [] };
   }
   const rows = await queryAll<{ kind: string; id: number }>(

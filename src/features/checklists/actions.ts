@@ -46,7 +46,7 @@ function nullEmpty<T extends Record<string, FormDataEntryValue>>(o: T) {
 
 export async function createTemplateAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role)) throw new Error("Not authorized.");
+  if (!canEditSops(user)) throw new Error("Not authorized.");
   const parsed = CreateTplSchema.parse(nullEmpty(Object.fromEntries(formData.entries())));
   const id = await createTemplate({ ...parsed, created_by: user.id });
   await execute(
@@ -63,7 +63,7 @@ export async function updateTemplateAction(formData: FormData) {
   // Header edits (name / description / category / active=archive) ripple
   // into every audit that's ever used this template. Gated to admin +
   // compliance (user spec).
-  if (!canDeleteOrArchive(user.role)) throw new Error("Only admin or compliance can edit a template's header.");
+  if (!canDeleteOrArchive(user)) throw new Error("Only admin or compliance can edit a template's header.");
   const raw = Object.fromEntries(formData.entries());
   const parsed = UpdateTplSchema.parse({
     ...raw,
@@ -78,7 +78,7 @@ export async function updateTemplateAction(formData: FormData) {
 
 export async function addItemAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role)) throw new Error("Not authorized.");
+  if (!canEditSops(user)) throw new Error("Not authorized.");
   const raw = Object.fromEntries(formData.entries());
   const parsed = ItemSchema.parse({
     ...raw,
@@ -120,7 +120,7 @@ export async function recordChecklistItemAnswerAction(formData: FormData) {
 export async function deleteItemAction(formData: FormData) {
   const user = await requireUser();
   // Hard-deletes a question — gated to admin + compliance (user spec).
-  if (!canDeleteOrArchive(user.role)) throw new Error("Only admin or compliance can delete a question.");
+  if (!canDeleteOrArchive(user)) throw new Error("Only admin or compliance can delete a question.");
   const id = Number(formData.get("id"));
   const templateId = Number(formData.get("template_id"));
   await deleteItem(id);

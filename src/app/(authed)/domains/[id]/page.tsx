@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser, canDeleteOrArchive, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canDeleteOrArchive, canEditSops } from "@/lib/auth/guard";
 import { linkDomainToSopAction, unlinkDomainFromSopAction } from "@/features/sops/linkActions";
 import {
   linkFrameworkToDomainAction,
@@ -19,7 +19,7 @@ export default async function DomainDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const { id: idStr } = await params;
   const id = Number(idStr);
   const domain = await getDomain(id);
@@ -49,7 +49,7 @@ export default async function DomainDetailPage({
 
   // Link buttons (editors only). A domain names at most one SOP, so the SOP
   // picker only shows while it has none.
-  const canLink = canEditSops(user.role);
+  const canLink = canEditSops(user);
   const hasDirectSop = sops.some((s) => s.direct === 1);
   type SopOpt = { id: number; code: string | null; title: string };
   type FwOpt = { id: number; name: string; domain_name: string | null };
@@ -111,7 +111,7 @@ export default async function DomainDetailPage({
             >
               ← All domains
             </Link>
-            {canDeleteOrArchive(user.role) && (
+            {canDeleteOrArchive(user) && (
               <DeleteEntityButton entityType="domain" entityId={domain.id} label="Domain" />
             )}
           </div>

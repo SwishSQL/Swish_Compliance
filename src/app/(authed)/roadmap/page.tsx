@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser } from "@/lib/auth/guard";
+import { requirePermission } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { queryAll, queryOne } from "@/lib/db";
 import {
@@ -80,7 +80,7 @@ export default async function RoadmapPage({
 }: {
   searchParams: Promise<{ from?: string; to?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("records.view_all");
   const sp = await searchParams;
 
   // Default to the last 30 days when no range is picked. We render the
@@ -105,7 +105,7 @@ export default async function RoadmapPage({
        -- never get a control_links row, so without the second arm the
        -- count reads zero for them.
        (SELECT COUNT(*) FROM corrective_actions ca
-        WHERE ca.status IN ('open','in_progress','submitted')
+        WHERE ca.status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted')
           AND (
             EXISTS (SELECT 1 FROM control_links cl
                     JOIN controls cc ON cc.id = cl.control_id
@@ -186,11 +186,11 @@ export default async function RoadmapPage({
     `SELECT
        (SELECT COUNT(*) FROM corrective_actions
          WHERE due_date < CAST(SYSUTCDATETIME() AS DATE)
-           AND status IN ('open','in_progress','submitted'))                                AS overdue_capas,
+           AND status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted'))                                AS overdue_capas,
        (SELECT COUNT(*) FROM checks
          WHERE next_due_date < CAST(SYSUTCDATETIME() AS DATE) AND is_active = 1)            AS overdue_checks,
        (SELECT COUNT(*) FROM corrective_actions
-         WHERE severity = 'critical' AND status IN ('open','in_progress','submitted'))      AS critical_capas,
+         WHERE severity = 'critical' AND status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted'))      AS critical_capas,
        (SELECT COUNT(*) FROM sops WHERE status = 'pending_review')                          AS pending_sops,
        (SELECT COUNT(*) FROM checks WHERE last_status = 'failing')                          AS failing_checks`
   );
@@ -220,7 +220,7 @@ export default async function RoadmapPage({
      WHERE ${AUDIT_RESPONSE_SHORTFALL_SQL}
        AND a.status IN ('submitted','closed')
        AND (ca.id IS NULL
-            OR ca.status IN ('open','in_progress','submitted','rejected'))
+            OR ca.status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted','rejected'))
      ORDER BY
        CASE WHEN ca.due_date < CAST(SYSUTCDATETIME() AS DATE) THEN 0 ELSE 1 END,
        CASE ca.severity

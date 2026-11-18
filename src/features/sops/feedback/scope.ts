@@ -7,8 +7,8 @@ import { listSopsForSearch, type SopSearchDoc } from "./repository";
  * register: privileged roles see everything; others see SOPs for all
  * departments or for any department in their scope.
  */
-export async function visibleSops(user: { id: number; role: string }): Promise<SopSearchDoc[]> {
-  const [docs, scope] = await Promise.all([listSopsForSearch(), getUserScope(user.id, user.role)]);
+export async function visibleSops(user: { id: number; permissions: ReadonlySet<string> }): Promise<SopSearchDoc[]> {
+  const [docs, scope] = await Promise.all([listSopsForSearch(), getUserScope(user.id, user)]);
   if (scope.full) return docs;
   return docs.filter(
     (d) => d.is_all_departments || d.department_ids.some((id) => scope.departmentIds.includes(id))

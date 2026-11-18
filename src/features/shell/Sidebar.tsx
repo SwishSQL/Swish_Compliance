@@ -258,6 +258,7 @@ const ADMINISTRATION: Section = {
     // Users, Brands, Departments and Org Units are tabs on this one page
     // now (user spec 2026-08-17) — no separate nav entries for each.
     { href: "/admin/config", label: "Config", icon: "config" },
+    { href: "/admin/permissions", label: "Permissions", icon: "config" },
     { href: "/admin/audit-logs", label: "Audit Logs", icon: "audit-logs" },
   ],
 };
@@ -385,9 +386,15 @@ function CollapsibleSection({
 export default function Sidebar({
   displayName,
   role,
+  roleTitle,
+  permissions,
 }: {
   displayName: string;
   role: string;
+  /** Display label(s) of the user's role(s). */
+  roleTitle?: string;
+  /** Effective permissions (docs/RBAC.md) — drives which items show. */
+  permissions: string[];
 }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -424,20 +431,25 @@ export default function Sidebar({
     return () => window.removeEventListener("keydown", onKey);
   }, [mobileOpen]);
 
-  let sections: Section[] = [WORKSPACE, COMPLIANCE_LIBRARY, ASSURANCE];
-  if (role === "admin") sections.push(ADMINISTRATION);
-
-  // Department managers get a trimmed nav (user spec): their workspace +
-  // Corrective Actions only — no authoring/GRC sections.
-  if (role === "department_manager") {
-    sections = [
-      WORKSPACE,
-      {
-        label: "Assurance",
-        items: ASSURANCE.items.filter((it) => it.href === "/capa"),
-      },
-    ];
-  }
+  // Navigation follows permissions (docs/RBAC.md). The pages enforce the
+  // same rules server-side; this only hides what a user can't open.
+  const has = (p: string) => permissions.includes(p);
+  const keep = (section: Section, allow: (href: string) => boolean): Section | null => {
+    const items = section.items.filter((it) => allow(it.href));
+    return items.length > 0 ? { ...section, items } : null;
+  };
+  const sections: Section[] = [
+    keep(WORKSPACE, (href) => href === "/my-work" || has("records.view_all")),
+    keep(COMPLIANCE_LIBRARY, (href) => href === "/sops" || has("grc.view")),
+    ASSURANCE,
+    keep(ADMINISTRATION, (href) => {
+      if (href === "/admin/audit-logs") return has("admin.audit_logs");
+      if (href === "/admin/permissions") return has("admin.permissions");
+      if (href === "/admin/import") return has("admin.settings");
+      if (href === "/admin/config") return has("admin.users") || has("admin.settings") || has("admin.permissions");
+      return has("admin.users") || has("admin.settings") || has("admin.audit_logs") || has("admin.permissions");
+    }),
+  ].filter((x): x is Section => x !== null);
 
   // Accordion: at most ONE section open at a time (user spec 2026-08-17—
   // opening a section like Workspace closes whichever other one was open).
@@ -692,7 +704,7 @@ export default function Sidebar({
               {displayName}
             </div>
             <div className="text-[10px] uppercase tracking-wider text-emerald-100 font-medium">
-              {roleLabel(role)}
+              {roleTitle ?? roleLabel(role)}
             </div>
           </div>
         </Link>

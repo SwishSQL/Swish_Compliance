@@ -4,7 +4,7 @@ import type { TxClient } from "@/lib/db";
 import type { Sop, SopStatus } from "./types";
 
 const SOP_SELECT = `
-  s.id, s.code, s.title, s.description, s.version, s.status, s.revision_of_id, s.file_url,
+  s.id, s.code, s.title, s.description, s.version, s.status, s.revision_of_id, s.workflow_route, s.file_url,
   s.attachment_data_url, s.attachment_name, s.attachment_mime,
   s.brand_id, b.name AS brand_name,
   s.department_id, d.name AS department_name,
@@ -383,7 +383,7 @@ export async function getOpenRevision(
 ): Promise<{ id: number; version: string; status: SopStatus } | undefined> {
   return queryOne(
     `SELECT TOP (1) id, version, status FROM sops
-     WHERE revision_of_id = $1 AND status NOT IN ('approved', 'archived')
+     WHERE revision_of_id = $1 AND status NOT IN ('approved', 'archived', 'rejected')
      ORDER BY id DESC`,
     [sopId]
   );
@@ -394,7 +394,12 @@ export async function getOpenRevision(
  * departments, file and link, with the next minor version number. The
  * approved SOP is untouched and stays live until the copy is approved.
  */
-export async function createSopRevision(sopId: number, version: string, userId: number): Promise<number> {
+export async function createSopRevision(
+  sopId: number,
+  version: string,
+  userId: number,
+  route: string
+): Promise<number> {
   return withTransaction(async (tx) => {
     const res = await tx.query<{ id: number }>(
       `INSERT INTO sops
@@ -403,16 +408,16 @@ export async function createSopRevision(sopId: number, version: string, userId: 
           attachment_data_url, attachment_name, attachment_mime,
           purpose, scope, process_flow, roles_responsibilities, inputs_outputs,
           tools_forms, kpis, ownership_review, appendices, signatures_approval,
-          brand_is_function, is_all_departments, home_domain_id, revision_of_id)
+          brand_is_function, is_all_departments, home_domain_id, revision_of_id, workflow_route)
        OUTPUT INSERTED.id
        SELECT code, title, description, $2, 'draft', file_url, brand_id, department_id,
               owner_id, $3, effective_date, review_date,
               attachment_data_url, attachment_name, attachment_mime,
               purpose, scope, process_flow, roles_responsibilities, inputs_outputs,
               tools_forms, kpis, ownership_review, appendices, signatures_approval,
-              brand_is_function, is_all_departments, home_domain_id, id
+              brand_is_function, is_all_departments, home_domain_id, id, $4
        FROM sops WHERE id = $1`,
-      [sopId, version, userId]
+      [sopId, version, userId, route]
     );
     const newId = res.rows[0].id;
     await tx.query(
@@ -437,4 +442,62 @@ export async function setSopStatus(
   } else {
     await execute(`UPDATE sops SET status = $1 WHERE id = $2`, [status, id]);
   }
+}
+
+/** Set the approval route of a new SOP (migration 007). */
+export async function setSopRoute(id: number, route: string): Promise<void> {
+  await execute(`UPDATE sops SET workflow_route = $1 WHERE id = $2`, [route, id]);
+}
+
+export type SopApproval = {
+  id: number;
+  sop_id: number;
+  sop_version: string | null;
+  approver_id: number | null;
+  approver_name: string | null;
+  approver_role: string | null;
+  decision: string;
+  from_status: string;
+  to_status: string;
+  comment: string | null;
+  decided_at: string;
+};
+
+/** One row per approval decision (docs/RBAC.md §4). */
+export async function recordSopApproval(input: {
+  sopId: number;
+  version: string | null;
+  approverId: number;
+  approverName: string;
+  approverRole: string;
+  decision: string;
+  from: string;
+  to: string;
+  comment: string | null;
+}): Promise<void> {
+  await execute(
+    `INSERT INTO sop_approvals
+       (sop_id, sop_version, approver_id, approver_name, approver_role, decision, from_status, to_status, comment)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
+      input.sopId,
+      input.version,
+      input.approverId,
+      input.approverName,
+      input.approverRole,
+      input.decision,
+      input.from,
+      input.to,
+      input.comment,
+    ]
+  );
+}
+
+export async function listSopApprovals(sopId: number): Promise<SopApproval[]> {
+  return queryAll<SopApproval>(
+    `SELECT id, sop_id, sop_version, approver_id, approver_name, approver_role, decision,
+            from_status, to_status, comment, decided_at
+     FROM sop_approvals WHERE sop_id = $1 ORDER BY decided_at, id`,
+    [sopId]
+  );
 }

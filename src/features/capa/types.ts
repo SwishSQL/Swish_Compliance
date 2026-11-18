@@ -1,9 +1,23 @@
+/**
+ * CAPA workflow (docs/RBAC.md §7):
+ *   open → assigned → in_progress → pending_manager_review
+ *        → pending_compliance_verification → closed
+ *   (returned_for_correction sends it back to the assignee)
+ * Legacy statuses from before RBAC are kept so existing rows still read
+ * correctly: submitted ≈ pending_compliance_verification, verified ≈
+ * verified-not-yet-closed, rejected ≈ returned.
+ */
 export type CapaStatus =
   | "open"
+  | "assigned"
   | "in_progress"
+  | "pending_manager_review"
+  | "pending_compliance_verification"
+  | "returned"
+  | "closed"
+  // legacy
   | "submitted"
   | "verified"
-  | "closed"
   | "rejected";
 
 export type CapaSeverity = "low" | "medium" | "high" | "critical";
@@ -147,16 +161,24 @@ export type AuditFinding = {
 
 export const CAPA_STATUS_LABEL: Record<CapaStatus, string> = {
   open: "Open",
+  assigned: "Assigned",
   in_progress: "In progress",
-  submitted: "Submitted",
-  verified: "Verified",
+  pending_manager_review: "Pending manager review",
+  pending_compliance_verification: "Pending compliance verification",
+  returned: "Returned for correction",
   closed: "Closed",
-  rejected: "Rejected",
+  submitted: "Submitted (legacy)",
+  verified: "Verified (legacy)",
+  rejected: "Returned (legacy)",
 };
 
 export const CAPA_STATUS_TONE: Record<CapaStatus, string> = {
   open: "bg-gray-100 text-gray-700 border-gray-200",
+  assigned: "bg-sky-50 text-sky-700 border-sky-200",
   in_progress: "bg-amber-50 text-amber-700 border-amber-200",
+  pending_manager_review: "bg-indigo-50 text-indigo-700 border-indigo-200",
+  pending_compliance_verification: "bg-purple-50 text-purple-700 border-purple-200",
+  returned: "bg-red-50 text-red-700 border-red-200",
   submitted: "bg-indigo-50 text-indigo-700 border-indigo-200",
   verified: "bg-emerald-50 text-emerald-700 border-emerald-200",
   closed: "bg-emerald-50 text-emerald-800 border-emerald-300",

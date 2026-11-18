@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { requireUser, canDeleteOrArchive } from "@/lib/auth/guard";
+import { requireUser } from "@/lib/auth/guard";
+import { departmentManagerIds } from "@/lib/auth/people";
 import { execute } from "@/lib/db";
 import {
   createAudit,
@@ -144,22 +145,33 @@ function auditTitle(audit: {
   );
 }
 
-function assertCanEditAudit(audit: AuditGuardSubject, actor: AuditGuardActor): void {
+/**
+ * Who may work on an audit's responses / evidence (docs/RBAC.md §6): the
+ * assigned auditor, or its creator if they may create audits. Finalized
+ * (closed) and cancelled audits are locked for everyone, admin included.
+ */
+function assertCanEditAudit(
+  audit: AuditGuardSubject,
+  actor: AuditGuardActor & { permissions: ReadonlySet<string> }
+): void {
   if (audit.status === "closed") {
-    throw new Error("This audit is closed and can't be edited anymore.");
+    throw new Error("This audit is finalized and can't be edited anymore.");
   }
-  const isOwner = audit.auditor_id === actor.id;
+  if (audit.status === "cancelled") {
+    throw new Error("This audit is cancelled and can't be edited.");
+  }
   const isAssignee = audit.assigned_to === actor.id;
-  const isAdmin = actor.role === "admin";
-  if (!isOwner && !isAssignee && !isAdmin) {
-    throw new Error(
-      "Only the auditor who created this audit, the user it's assigned to, or an admin can edit it."
-    );
+  const isCreator = audit.auditor_id === actor.id && actor.permissions.has("audit.create");
+  if (!isAssignee && !isCreator) {
+    throw new Error("Only the assigned auditor (or the audit's creator) can edit this audit.");
   }
 }
 
 export async function createAuditAction(formData: FormData) {
   const user = await requireUser();
+  if (!user.permissions.has("audit.create")) {
+    throw new Error("Only Compliance or the IBE Manager can create and assign audits.");
+  }
   const raw = Object.fromEntries(formData.entries());
 
   const blank = (v: FormDataEntryValue | undefined) =>
@@ -293,6 +305,27 @@ export async function createAuditAction(formData: FormData) {
     ]
   );
 
+  // Tell the audited department's manager(s) and the auditee that their
+  // department has an audit (docs/RBAC.md §6).
+  const deptAudience = [
+    ...(await departmentManagerIds(parsed.department_id ? [parsed.department_id] : [])),
+    ...(parsed.auditee_id ? [parsed.auditee_id] : []),
+  ].filter((uid) => uid !== parsed.assigned_to);
+  if (deptAudience.length > 0) {
+    await notify({
+      audience: { userIds: deptAudience },
+      actor: { id: user.id, name: user.displayName, role: user.role },
+      kind: "audit:department_assigned",
+      title: `📋 An audit has been scheduled for your department`,
+      body:
+        `Created by ${user.displayName}` +
+        (parsed.start_at ? `, starting ${new Date(parsed.start_at).toLocaleString()}` : "") +
+        `. You'll see the results and any CAPAs once it is submitted.`,
+      severity: "info",
+      entity: { type: "audit", id, href: `/audits/${id}` },
+    });
+  }
+
   // If the creator picked an assignee, ping them. notify() swallows its
   // own errors so a flaky notification can't take the audit insert down.
   if (parsed.assigned_to && parsed.assigned_to !== user.id) {
@@ -374,9 +407,8 @@ export async function deleteAuditAttachmentAction(formData: FormData) {
   }
   const audit = await getAudit(auditId);
   if (!audit) throw new Error("Audit not found.");
-  // Owner/assignee/admin may manage their audit's evidence; compliance
-  // may also remove it (governance). Others blocked.
-  if (!canDeleteOrArchive(user.role)) assertCanEditAudit(audit, user);
+  // Only while the audit is still being worked on (never once finalized).
+  assertCanEditAudit(audit, user);
 
   await deleteAuditAttachment(attachmentId);
   await execute(
@@ -499,6 +531,37 @@ export async function saveResponsesBulkAction(input: {
   return { ok: true, saved: parsed.data.answers.length };
 }
 
+/**
+ * Every failed question becomes a CAPA (idempotent set-based insert;
+ * findings that already have one are skipped), assigned to the audited
+ * department's manager. Runs when the audit is finalized.
+ */
+async function spawnCapasForFinalizedAudit(
+  auditId: number,
+  audit: Parameters<typeof auditTitle>[0],
+  user: { id: number; email: string; displayName: string; role: string }
+): Promise<void> {
+  const { count: spawned, assignedManagerIds } = await autoCreateCapasForAudit(auditId, user.id);
+  if (spawned > 0) {
+    await execute(
+      `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
+       VALUES ($1, $2, 'capa:auto_created_from_audit', 'audit', $3, $4)`,
+      [user.id, user.email, auditId, JSON.stringify({ capa_count: spawned, assigned_manager_ids: assignedManagerIds })]
+    );
+  }
+  for (const managerId of assignedManagerIds) {
+    await notify({
+      audience: { userIds: [managerId] },
+      actor: { id: user.id, name: user.displayName, role: user.role },
+      kind: "capa:assigned",
+      title: `📋 New corrective action(s) for your department`,
+      body: `Audit "${auditTitle(audit)}" was finalized with failed questions. As department manager, assign them to your team.`,
+      severity: "warning",
+      entity: { type: "audit", id: auditId, href: `/capa?audit_id=${auditId}` },
+    });
+  }
+}
+
 export async function submitAuditAction(formData: FormData) {
   const user = await requireUser();
   const raw = Object.fromEntries(formData.entries());
@@ -525,40 +588,8 @@ export async function submitAuditAction(formData: FormData) {
     ]
   );
 
-  // Every failed question becomes a CAPA — ALWAYS (user spec), no
-  // longer behind the spawn_capa checkbox. Idempotent set-based insert;
-  // findings that already have a CAPA are skipped. CAPAs land assigned
-  // to the audited department's manager (user spec) — unassigned only
-  // when that department has no manager set yet.
-  if (failedItemIds.length > 0) {
-    const { count: spawned, assignedManagerIds } = await autoCreateCapasForAudit(
-      parsed.id,
-      user.id
-    );
-    if (spawned > 0) {
-      await execute(
-        `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
-         VALUES ($1, $2, 'capa:auto_created_from_audit', 'audit', $3, $4)`,
-        [
-          user.id,
-          user.email,
-          parsed.id,
-          JSON.stringify({ capa_count: spawned, assigned_manager_ids: assignedManagerIds }),
-        ]
-      );
-    }
-    for (const managerId of assignedManagerIds) {
-      await notify({
-        audience: { userIds: [managerId] },
-        actor: { id: user.id, name: user.displayName, role: user.role },
-        kind: "capa:assigned",
-        title: `📋 New corrective action(s) for your department`,
-        body: `Audit "${auditTitle(audit)}" failed one or more questions. As department manager you've been assigned to resolve them.`,
-        severity: "warning",
-        entity: { type: "audit", id: parsed.id, href: `/capa?audit_id=${parsed.id}` },
-      });
-    }
-  }
+  // CAPAs are generated when Compliance finalizes the audit (closeAuditAction),
+  // not on submission — docs/RBAC.md §6.
 
   // Notify reviewers. Critical fails go to a wider audience.
   const hasCritical = criticalFailed > 0;
@@ -650,9 +681,8 @@ export async function cancelAuditAction(formData: FormData) {
     throw new Error("This audit is already cancelled.");
   }
 
-  // Cancel = archive of an audit; gated to admin + compliance (user spec).
-  if (!canDeleteOrArchive(user.role)) {
-    throw new Error("Only admin or compliance can cancel an audit.");
+  if (!user.permissions.has("audit.cancel")) {
+    throw new Error("Only Compliance can cancel an audit.");
   }
 
   await cancelAudit(id);
@@ -692,20 +722,41 @@ export async function closeAuditAction(formData: FormData) {
 
   const audit = await getAudit(id);
   if (!audit) throw new Error("Audit not found.");
-  // The same edit gate guards close: only the auditor/admin can close, and
-  // a closed audit can't be 'closed' again (assertCanEditAudit throws on
-  // closed).
-  assertCanEditAudit(audit, user);
+  // Finalizing is Compliance's review step (docs/RBAC.md §6): it needs
+  // audit.finalize, and the auditor who performed it can't finalize it.
+  if (!user.permissions.has("audit.finalize")) {
+    throw new Error("Only Compliance or the IBE Manager can review and finalize an audit.");
+  }
+  if (audit.assigned_to === user.id) {
+    throw new Error("The auditor who performed this audit can't finalize it — another reviewer must.");
+  }
   if (audit.status !== "submitted") {
-    throw new Error("Only a submitted audit can be closed.");
+    throw new Error("Only a submitted audit can be finalized.");
   }
 
   await closeAudit(id);
+  await spawnCapasForFinalizedAudit(id, audit, user);
   await execute(
-    `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id)
-     VALUES ($1, $2, 'audit:closed', 'audit', $3)`,
-    [user.id, user.email, id]
+    `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
+     VALUES ($1, $2, 'audit:closed', 'audit', $3, $4)`,
+    [
+      user.id,
+      user.email,
+      id,
+      JSON.stringify({ from: "submitted", to: "closed", by_user_name: user.displayName, by_user_role: user.role }),
+    ]
   );
+  if (audit.assigned_to) {
+    await notify({
+      audience: { userIds: [audit.assigned_to] },
+      actor: { id: user.id, name: user.displayName, role: user.role },
+      kind: "audit:finalized",
+      title: `Audit #${id} was reviewed and finalized`,
+      body: `${user.displayName} finalized the results. They are now locked.`,
+      severity: "success",
+      entity: { type: "audit", id, href: `/audits/${id}` },
+    });
+  }
   revalidatePath("/audits");
   revalidatePath(`/audits/${id}`);
 }

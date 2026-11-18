@@ -10,7 +10,7 @@ import { SOP_SECTIONS } from "@/features/sops/types";
 
 export default async function NewSopPage() {
   const user = await requireUser();
-  if (!canCreateSops(user.role)) redirect("/sops");
+  if (!canCreateSops(user)) redirect("/sops");
 
   const brands = await queryAll<{ id: number; name: string }>(
     `SELECT id, name FROM brands WHERE is_active = 1 ORDER BY name`

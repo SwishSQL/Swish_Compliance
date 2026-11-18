@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { listControls, listControlRates } from "@/features/controls/repository";
 import ControlRatesBadges from "@/features/controls/ControlRatesBadges";
@@ -18,7 +18,7 @@ export default async function ControlsPage({
 }: {
   searchParams: Promise<{ search?: string; health?: ControlHealth; framework?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const sp = await searchParams;
   const allControls = await listControls({
     search: sp.search,
@@ -27,7 +27,7 @@ export default async function ControlsPage({
   });
   // Access scoping: non-privileged users only see controls under
   // frameworks in their mapped domains.
-  const scope = await getUserScope(user.id, user.role);
+  const scope = await getUserScope(user.id, user);
   const scopedIds = await getScopedIds(scope);
   const controls = scopedIds
     ? allControls.filter(
@@ -82,7 +82,7 @@ export default async function ControlsPage({
               ↻ Recompute health
             </button>
           </form>
-          {canEditSops(user.role) && (
+          {canEditSops(user) && (
             <Link
               href="/controls/new"
               className="bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"

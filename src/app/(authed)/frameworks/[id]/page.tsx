@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser, canAccessAdmin, canDeleteOrArchive, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canAccessAdmin, canDeleteOrArchive, canEditSops } from "@/lib/auth/guard";
 import {
   linkControlToFrameworkAction,
   linkFrameworkToDomainAction,
@@ -22,14 +22,14 @@ export default async function FrameworkDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const { id: idStr } = await params;
   const id = Number(idStr);
   const fw = await getFramework(id);
   if (!fw) notFound();
   const controls = await listControls({ framework_id: id });
-  const isAdmin = canAccessAdmin(user.role);
-  const canLink = canEditSops(user.role);
+  const isAdmin = canAccessAdmin(user);
+  const canLink = canEditSops(user);
   // Controls not yet under this framework — candidates for "Link control".
   const linkableControls = canLink
     ? await queryAll<{ id: number; code: string | null; name: string; framework_name: string | null }>(
@@ -136,7 +136,7 @@ export default async function FrameworkDetailPage({
                 </button>
               </form>
             )}
-            {canDeleteOrArchive(user.role) && (
+            {canDeleteOrArchive(user) && (
               <DeleteEntityButton entityType="framework" entityId={fw.id} label="Framework" />
             )}
           </div>

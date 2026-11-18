@@ -36,8 +36,12 @@ async function resolveAudience(audience: Audience): Promise<number[]> {
   }
   if (audience.roles && audience.roles.length > 0) {
     const rows = await queryAll<{ id: number }>(
-      `SELECT id FROM users
-       WHERE is_active = 1 AND role = ANY($1::text[])`,
+      // Primary role or any extra role (user_roles, migration 007).
+      `SELECT u.id FROM users u
+       WHERE u.is_active = 1
+         AND (u.role = ANY($1::text[])
+              OR EXISTS (SELECT 1 FROM user_roles r
+                         WHERE r.user_id = u.id AND r.role = ANY($1::text[])))`,
       [audience.roles]
     );
     rows.forEach((r) => set.add(r.id));

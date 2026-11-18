@@ -46,7 +46,7 @@ const OwnerSchema = z.object({
 export async function toggleFrameworkAction(formData: FormData) {
   // Deactivate = archive; gated to admin + compliance (user spec).
   const admin = await requireUser();
-  if (!canDeleteOrArchive(admin.role)) {
+  if (!canDeleteOrArchive(admin)) {
     throw new Error("Only admin or compliance can activate/deactivate frameworks.");
   }
   const raw = Object.fromEntries(formData.entries());
@@ -91,7 +91,7 @@ export async function toggleFrameworkAction(formData: FormData) {
 
 export async function createFrameworkAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role)) throw new Error("Not authorized.");
+  if (!canEditSops(user)) throw new Error("Not authorized.");
 
   const parsed = CreateSchema.parse(nullEmpty(Object.fromEntries(formData.entries())));
   const isActive = parsed.is_active === "true" || parsed.is_active === "on";

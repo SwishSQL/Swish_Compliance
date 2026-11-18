@@ -16,7 +16,7 @@ const CTRL_SELECT = `
   (SELECT COUNT(*) FROM checks ch WHERE ch.control_id = c.id)                                     AS linked_checks,
   (SELECT COUNT(*) FROM corrective_actions ca
     JOIN control_links cl ON cl.entity_type = 'capa' AND cl.entity_id = ca.id
-    WHERE cl.control_id = c.id AND ca.status IN ('open','in_progress','submitted'))                     AS open_capas
+    WHERE cl.control_id = c.id AND ca.status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted'))                     AS open_capas
 FROM controls c
 LEFT JOIN frameworks f ON f.id = c.framework_id
 LEFT JOIN users      u ON u.id = c.owner_user_id
@@ -238,7 +238,7 @@ async function recomputeHealth(controlId?: number): Promise<number> {
                 SUM(CASE WHEN ca.severity = 'critical' THEN 1 ELSE 0 END)           AS critical_open
          FROM control_links cl
          JOIN corrective_actions ca ON cl.entity_type = 'capa' AND cl.entity_id = ca.id
-         WHERE ca.status IN ('open','in_progress','submitted')
+         WHERE ca.status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted')
          GROUP BY cl.control_id
        ) lc ON lc.control_id = c.id
        LEFT JOIN audit_agg aa ON aa.control_id = c.id

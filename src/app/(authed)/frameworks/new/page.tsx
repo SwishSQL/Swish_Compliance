@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { queryAll } from "@/lib/db";
 import { createFrameworkAction } from "@/features/frameworks/actions";
@@ -11,8 +11,8 @@ export default async function NewFrameworkPage({
 }: {
   searchParams: Promise<{ domain?: string }>;
 }) {
-  const user = await requireUser();
-  if (!canEditSops(user.role)) redirect("/frameworks");
+  const user = await requirePermission("grc.view");
+  if (!canEditSops(user)) redirect("/frameworks");
   const sp = await searchParams;
   const presetDomain = sp.domain ? Number(sp.domain) : null;
 

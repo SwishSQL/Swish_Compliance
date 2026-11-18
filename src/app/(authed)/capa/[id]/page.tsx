@@ -21,6 +21,13 @@ import {
   SEVERITY_LABEL,
   SEVERITY_TONE,
 } from "@/features/capa/types";
+import {
+  canWorkOnCapa,
+  canManagerReviewCapa,
+  canVerifyCloseCapa,
+  canViewCapa,
+} from "@/features/capa/workflow";
+import { getUserScope } from "@/lib/auth/access";
 
 /**
  * CAPA detail page — role-aware. The owner sees an execution-first
@@ -41,28 +48,25 @@ export default async function CapaDetailPage({
 
   const capa = await getCapa(id);
   if (!capa) notFound();
+  const scope = await getUserScope(user.id, user);
+  const actor = { id: user.id, permissions: user.permissions, departmentIds: scope.departmentIds };
+  // Record-level access: a URL to another department's CAPA is a 404.
+  if (!canViewCapa({ ...actor, fullScope: scope.full }, capa)) notFound();
 
   const [auditor, evidences] = await Promise.all([
     getCapaAuditorContext(id),
     listCapaEvidences(id),
   ]);
 
+  // docs/RBAC.md §7: owner works & submits; the department manager
+  // reviews; Compliance verifies and closes. Nobody reviews their own CAPA.
   const isOwner = capa.assigned_to === user.id;
-  const isCreator = capa.created_by === user.id;
-  const isReviewer =
-    user.role === "admin" ||
-    user.role === "compliance" ||
-    user.role === "business_excellence" ||
-    capa.reviewer_id === user.id ||
-    isCreator;
   const isLocked = capa.status === "closed" || capa.status === "verified";
-  const canEditExecution = (isOwner || user.role === "admin") && !isLocked;
-  const canSubmit =
-    isOwner &&
-    (capa.status === "open" ||
-      capa.status === "in_progress" ||
-      capa.status === "rejected");
-  const canReview = isReviewer && !isOwner && capa.status === "submitted";
+  const canEditExecution = canWorkOnCapa(actor, capa);
+  const canSubmit = canEditExecution;
+  const managerReview = canManagerReviewCapa(actor, capa);
+  const complianceReview = canVerifyCloseCapa(actor, capa);
+  const canReview = managerReview || complianceReview;
 
   return (
     <Workspace
@@ -92,7 +96,7 @@ export default async function CapaDetailPage({
               Assigned to you
             </span>
           )}
-          {canDeleteOrArchive(user.role) && (
+          {canDeleteOrArchive(user) && (
             <span className="ml-auto">
               <DeleteEntityButton entityType="capa" entityId={capa.id} label="Corrective action" />
             </span>
@@ -441,7 +445,7 @@ export default async function CapaDetailPage({
       {canReview && (
         <div className="bg-white border border-brand-300 rounded-2xl p-6 mb-4 space-y-4">
           <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
-            Reviewer actions
+            {managerReview ? "Department manager review" : "Compliance verification"}
           </h3>
           <p className="text-xs text-gray-600">
             Compare the auditor&rsquo;s evidence above with the CAPA evidence
@@ -451,7 +455,11 @@ export default async function CapaDetailPage({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <form action={transitionCapaAction}>
               <input type="hidden" name="id" value={capa.id} />
-              <input type="hidden" name="status" value="closed" />
+              <input
+                type="hidden"
+                name="status"
+                value={managerReview ? "pending_compliance_verification" : "closed"}
+              />
               <textarea
                 name="resolution_note"
                 placeholder="Verification note (optional)"
@@ -462,14 +470,14 @@ export default async function CapaDetailPage({
                 type="submit"
                 className="w-full bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-semibold"
               >
-                ✓ Approve & Close
+                {managerReview ? "✓ Forward to Compliance" : "✓ Verify & formally close"}
               </button>
             </form>
             <form action={rejectCapaAction}>
               <input type="hidden" name="id" value={capa.id} />
               <textarea
                 name="reason"
-                placeholder="Rejection reason (required) — tell the owner what to fix"
+                placeholder="Reason (required) — tell the owner what to correct"
                 required
                 rows={2}
                 className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg mb-2"
@@ -478,7 +486,7 @@ export default async function CapaDetailPage({
                 type="submit"
                 className="w-full bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-semibold"
               >
-                ✕ Reject & Return
+                ✕ Return for correction
               </button>
             </form>
           </div>

@@ -1,12 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getSession } from "@/lib/auth/session";
+import { getAuthUser } from "@/lib/auth/guard";
 import { listSopFeedback } from "@/features/sops/feedback/repository";
 import { visibleSops } from "@/features/sops/feedback/scope";
 import { sectionLabel } from "@/features/sops/feedback/types";
 
 /** CSV of SOP review feedback (opens in Excel), filtered like the page. */
 export async function GET(req: NextRequest) {
-  const user = await getSession();
+  const user = await getAuthUser();
   if (!user) return NextResponse.redirect(new URL("/login", req.url));
 
   const sp = req.nextUrl.searchParams;

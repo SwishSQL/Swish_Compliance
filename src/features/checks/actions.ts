@@ -47,7 +47,7 @@ function nullEmpty<T extends Record<string, FormDataEntryValue>>(o: T) {
 
 export async function createCheckAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role)) throw new Error("Not authorized.");
+  if (!canEditSops(user)) throw new Error("Not authorized.");
   const parsed = CreateSchema.parse(nullEmpty(Object.fromEntries(formData.entries())));
   const id = await createCheck(parsed);
   await execute(
@@ -75,7 +75,7 @@ export async function createCheckAction(formData: FormData) {
  */
 export async function setCheckOwnerAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role) && user.role !== "compliance") {
+  if (!canEditSops(user)) {
     throw new Error("Only admin, Business Excellence, or Compliance can change the test owner.");
   }
   const id = Number(formData.get("id"));
@@ -103,6 +103,13 @@ export async function recordResultAction(formData: FormData) {
   delete (raw as Record<string, unknown>).evidence_file;
 
   const parsed = ResultSchema.parse(raw);
+
+  // Recording a control-test result: GRC editors, or the test's owner.
+  const target = await getCheck(parsed.check_id);
+  if (!target) throw new Error("Test not found.");
+  if (!user.permissions.has("grc.edit") && target.owner_user_id !== user.id) {
+    throw new Error("Only Compliance or the test's owner can record a result.");
+  }
 
   await recordResult({
     check_id: parsed.check_id,
@@ -185,6 +192,9 @@ export async function recordResultAction(formData: FormData) {
  */
 export async function assignTestAction(formData: FormData): Promise<void> {
   const user = await requireUser();
+  if (!user.permissions.has("audit.create")) {
+    throw new Error("Only Compliance or the IBE Manager can assign tests.");
+  }
   const raw = Object.fromEntries(formData.entries());
   const blank = (v: FormDataEntryValue | undefined) =>
     v === "" || v === undefined ? null : v;

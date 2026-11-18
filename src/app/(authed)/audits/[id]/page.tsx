@@ -1,3 +1,4 @@
+import { getUserScope } from "@/lib/auth/access";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser, canDeleteOrArchive } from "@/lib/auth/guard";
@@ -48,14 +49,20 @@ export default async function AuditDetailPage({
   // about submissions and closures; they need to OPEN the audit to act
   // on the notification. Edit rights stay narrower — only
   // creator/assignee/admin can record/edit responses (see below).
+  // Visibility (docs/RBAC.md §6/§8): organisation-wide users; the creator,
+  // assigned auditor, auditee and reviewer; and the audited department's
+  // managers (they see their department's results and findings).
   const isOwner = audit.auditor_id === user.id;
   const isAssignee = audit.assigned_to === user.id;
-  const isAdmin = user.role === "admin";
-  const isReviewer =
-    user.role === "compliance" ||
-    user.role === "business_excellence" ||
-    user.role === "ceo";
-  if (!isOwner && !isAssignee && !isAdmin && !isReviewer) notFound();
+  const scope = await getUserScope(user.id, user);
+  const isReviewer = scope.full;
+  const isDeptViewer =
+    user.permissions.has("capa.monitor") &&
+    audit.department_id != null &&
+    scope.departmentIds.includes(audit.department_id);
+  const isParticipant = audit.auditee_id === user.id || audit.reviewer_id === user.id;
+  if (!isOwner && !isAssignee && !isReviewer && !isDeptViewer && !isParticipant) notFound();
+  const canFinalize = user.permissions.has("audit.finalize") && !isAssignee;
 
   const [scopeRows, attachments] = await Promise.all([
     listAuditScopeItems(id),
@@ -66,7 +73,10 @@ export default async function AuditDetailPage({
   // closed audit. Reviewers see the audit read-only — the radio buttons
   // and Save controls in AuditQuestionRow are disabled for them.
   const isClosed = audit.status === "closed";
-  const canEdit = !isClosed && (isOwner || isAssignee || isAdmin);
+  const canEdit =
+    !isClosed &&
+    audit.status !== "cancelled" &&
+    (isAssignee || (isOwner && user.permissions.has("audit.create")));
   const isOpen = audit.status === "in_progress" && canEdit;
 
   // Group scope rows: test → template → items. Same item can appear under
@@ -256,7 +266,7 @@ export default async function AuditDetailPage({
           </div>
 
           <div className="flex flex-col items-end gap-3 shrink-0">
-            {canDeleteOrArchive(user.role) && (
+            {canDeleteOrArchive(user) && (
               <DeleteEntityButton entityType="audit" entityId={audit.id} label="Audit" />
             )}
             {audit.score !== null && (
@@ -465,12 +475,7 @@ export default async function AuditDetailPage({
               AuditSubmitSection. */}
           <AuditSubmitSection
             auditId={audit.id}
-            canCancel={
-              isOwner ||
-              user.role === "admin" ||
-              user.role === "compliance" ||
-              user.role === "business_excellence"
-            }
+            canCancel={user.permissions.has("audit.cancel")}
             cancelAction={cancelAuditAction}
           />
         </div>
@@ -508,12 +513,15 @@ export default async function AuditDetailPage({
             Submitted{" "}
             {audit.submitted_at && new Date(audit.submitted_at).toLocaleString()}
             .{" "}
-            {canEdit
-              ? "You can edit until the audit is closed, or close it when all CAPAs are addressed."
-              : "Only the auditor who created this audit can edit or close it."}
+            {canFinalize
+              ? "Review the results and evidence, then finalize. Finalizing locks the results and creates CAPAs for failed tests."
+              : canEdit
+              ? "Awaiting Compliance review. You can reopen it to correct answers until it is finalized."
+              : "Awaiting Compliance review and finalization."}
           </div>
-          {canEdit && (
+          {(canEdit || canFinalize) && (
             <div className="flex gap-2">
+              {canEdit && (
               <form action={reopenAuditAction}>
                 <input type="hidden" name="id" value={audit.id} />
                 <button
@@ -523,15 +531,18 @@ export default async function AuditDetailPage({
                   Edit audit
                 </button>
               </form>
+              )}
+              {canFinalize && (
               <form action={closeAuditAction}>
                 <input type="hidden" name="id" value={audit.id} />
                 <button
                   type="submit"
                   className="bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"
                 >
-                  Close audit
+                  Finalize audit
                 </button>
               </form>
+              )}
             </div>
           )}
         </div>

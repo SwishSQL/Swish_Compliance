@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canEditSops } from "@/lib/auth/guard";
 import { redirect } from "next/navigation";
 import Workspace from "@/features/shell/Workspace";
 import { createTemplateAction } from "@/features/checklists/actions";
@@ -7,8 +7,8 @@ import { CHECKLIST_CATEGORIES_FALLBACK } from "@/features/checklists/types";
 import { listOptions } from "@/features/config/repository";
 
 export default async function NewTemplatePage() {
-  const user = await requireUser();
-  if (!canEditSops(user.role)) redirect("/checklists/templates");
+  const user = await requirePermission("grc.view");
+  if (!canEditSops(user)) redirect("/checklists/templates");
 
   const dbCategories = await listOptions("checklist_category", true);
   const categories =

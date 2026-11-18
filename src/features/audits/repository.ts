@@ -79,13 +79,21 @@ export async function listAudits(filters: {
   /** When set, restricts to audits where the user is creator or assignee.
    *  Admins should leave this off to see everything. */
   scopedToUserId?: number;
+  /** With scopedToUserId: also include audits of these departments. */
+  scopedDepartmentIds?: number[];
 } = {}): Promise<Audit[]> {
   const conditions: string[] = [];
   const params: unknown[] = [];
   if (filters.scopedToUserId) {
     params.push(filters.scopedToUserId);
+    const me = `$${params.length}`;
+    let dept = "";
+    if (filters.scopedDepartmentIds && filters.scopedDepartmentIds.length > 0) {
+      params.push(filters.scopedDepartmentIds);
+      dept = ` OR a.department_id = ANY($${params.length}::int[])`;
+    }
     conditions.push(
-      `(a.auditor_id = $${params.length} OR a.assigned_to = $${params.length})`
+      `(a.auditor_id = ${me} OR a.assigned_to = ${me} OR a.auditee_id = ${me} OR a.reviewer_id = ${me}${dept})`
     );
   }
   if (filters.search) {

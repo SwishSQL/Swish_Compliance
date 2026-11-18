@@ -24,7 +24,7 @@ function ids(formData: FormData, ...keys: string[]): number[] {
 
 async function requireEditor() {
   const user = await requireUser();
-  if (!canEditSops(user.role)) throw new Error("Not authorized.");
+  if (!canEditSops(user)) throw new Error("Not authorized.");
   return user;
 }
 

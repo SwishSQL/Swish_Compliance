@@ -1,5 +1,7 @@
 export type SopStatus =
   | "draft"
+  | "pending_opex"
+  | "pending_dept_validation"
   | "pending_compliance"
   | "returned_to_dm"
   | "pending_business_excellence"
@@ -7,10 +9,13 @@ export type SopStatus =
   | "pending_ceo"
   | "returned_to_be"
   | "approved"
+  | "rejected"
   | "archived";
 
 export const SOP_STATUSES: SopStatus[] = [
   "draft",
+  "pending_opex",
+  "pending_dept_validation",
   "pending_compliance",
   "returned_to_dm",
   "pending_business_excellence",
@@ -18,6 +23,7 @@ export const SOP_STATUSES: SopStatus[] = [
   "pending_ceo",
   "returned_to_be",
   "approved",
+  "rejected",
   "archived",
 ];
 
@@ -30,6 +36,8 @@ export type Sop = {
   status: SopStatus;
   /** Set on a draft that revises an approved SOP (migration 006). */
   revision_of_id: number | null;
+  /** Approval route (migration 007): "standard" | "opex_authored" | null (legacy). */
+  workflow_route: string | null;
   file_url: string | null;
   attachment_data_url: string | null;
   attachment_name: string | null;
@@ -91,18 +99,23 @@ export type SopSectionKey = (typeof SOP_SECTIONS)[number]["key"];
 
 export const SOP_STATUS_LABEL: Record<SopStatus, string> = {
   draft: "Draft",
+  pending_opex: "Pending OPEX review",
+  pending_dept_validation: "Pending department validation",
   pending_compliance: "Pending Compliance review",
-  returned_to_dm: "Returned to Department Manager",
-  pending_business_excellence: "Pending Business Excellence",
+  returned_to_dm: "Returned to author",
+  pending_business_excellence: "Pending IBE review",
   returned_to_compliance: "Returned to Compliance",
   pending_ceo: "Pending CEO approval",
-  returned_to_be: "Returned to Business Excellence",
+  returned_to_be: "Returned to IBE",
   approved: "Approved (locked)",
+  rejected: "Rejected",
   archived: "Archived",
 };
 
 export const SOP_STATUS_TONE: Record<SopStatus, string> = {
   draft: "bg-gray-100 text-gray-700 border-gray-200",
+  pending_opex: "bg-sky-50 text-sky-700 border-sky-200",
+  pending_dept_validation: "bg-sky-50 text-sky-700 border-sky-200",
   pending_compliance: "bg-amber-50 text-amber-700 border-amber-200",
   returned_to_dm: "bg-red-50 text-red-700 border-red-200",
   pending_business_excellence: "bg-indigo-50 text-indigo-700 border-indigo-200",
@@ -110,40 +123,13 @@ export const SOP_STATUS_TONE: Record<SopStatus, string> = {
   pending_ceo: "bg-purple-50 text-purple-700 border-purple-200",
   returned_to_be: "bg-red-50 text-red-700 border-red-200",
   approved: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  rejected: "bg-red-100 text-red-800 border-red-300",
   archived: "bg-gray-50 text-gray-500 border-gray-200",
 };
 
 /** Locked = no editing of any field is allowed. */
 export function isSopLocked(status: SopStatus): boolean {
-  return status === "approved" || status === "archived";
-}
-
-/**
- * Who may add, replace or remove the attached source file once the SOP is
- * locked (approved/archived). The approved CONTENT stays frozen, but SOPs
- * loaded from the workbook arrive without their document, so it must still
- * be possible to attach it afterwards:
- *   - admin: add, replace or remove
- *   - compliance: add only while no file is attached (never changes one)
- * Shared by the page (which buttons to show) and the server actions (what is
- * enforced); every such change is audit-logged as "after approval".
- */
-/** Roles that manage every SOP's content, file and link (user spec 2026-11-08). */
-export const SOP_MANAGER_ROLES = ["admin", "compliance", "opex", "business_excellence"];
-
-/**
- * Who may change an SOP's attachment and external link at any time — even
- * when its content is locked — and start a new version of an approved SOP:
- * Admin, Compliance, OPEX, Business Excellence, and the department manager
- * who owns (or created) the SOP. Every change is audit-logged.
- */
-export function canManageSop(
-  role: string,
-  userId: number,
-  sop: { owner_id: number | null; created_by: number | null }
-): boolean {
-  if (SOP_MANAGER_ROLES.includes(role)) return true;
-  return role === "department_manager" && (sop.owner_id === userId || sop.created_by === userId);
+  return status === "approved" || status === "archived" || status === "rejected";
 }
 
 /** Next minor version: "1.0" → "1.1", "1.9" → "1.10", "2" → "2.1". */
@@ -153,219 +139,272 @@ export function nextSopVersion(v: string): string {
   return `${m[1]}.${m[2] ? Number(m[2]) + 1 : 1}`;
 }
 
-export function canChangeLockedSopAttachment(
-  role: string,
-  hasAttachment: boolean
-): boolean {
-  if (role === "admin") return true;
-  if (role === "compliance") return !hasAttachment;
-  return false;
+// ---------------------------------------------------------------------------
+// RBAC workflow (docs/RBAC.md §4). Pure: callers pass the actor (permissions
+// + the departments they're scoped to) and the SOP.
+// ---------------------------------------------------------------------------
+
+/**
+ * standard      DM / Compliance / IBE author → OPEX → Compliance → IBE → CEO
+ * opex_authored OPEX author → Department Manager validation → Compliance → IBE → CEO
+ * legacy (NULL) SOPs already in flight before RBAC → Compliance → IBE → CEO
+ */
+export type SopRoute = "standard" | "opex_authored";
+
+export type SopActor = {
+  id: number;
+  permissions: ReadonlySet<string>;
+  /** Departments in the actor's scope (empty for organisation-wide users). */
+  departmentIds: readonly number[];
+};
+
+export type SopRef = {
+  status: SopStatus;
+  created_by: number | null;
+  owner_id: number | null;
+  workflow_route?: string | null;
+  department_id?: number | null;
+  department_ids?: readonly number[];
+  is_all_departments?: boolean;
+};
+
+/** Route a new SOP follows, from its author's permissions. */
+export function routeForAuthor(author: { permissions: ReadonlySet<string> }): SopRoute {
+  return author.permissions.has("sop.review_opex") ? "opex_authored" : "standard";
+}
+
+/** First review stage of a route (what "Submit" moves a draft to). */
+export function firstReviewStage(route: string | null | undefined): SopStatus {
+  if (route === "standard") return "pending_opex";
+  if (route === "opex_authored") return "pending_dept_validation";
+  return "pending_compliance";
+}
+
+function sopDepartmentIds(sop: SopRef): number[] {
+  const ids = [...(sop.department_ids ?? [])];
+  if (sop.department_id != null && !ids.includes(sop.department_id)) ids.push(sop.department_id);
+  return ids;
+}
+
+/** The actor's departments overlap the SOP's (an all-departments SOP matches any). */
+export function inSopDepartment(actor: SopActor, sop: SopRef): boolean {
+  if (sop.is_all_departments) return actor.departmentIds.length > 0;
+  const ids = sopDepartmentIds(sop);
+  return ids.some((d) => actor.departmentIds.includes(d));
+}
+
+export function isSopAuthor(actor: { id: number }, sop: SopRef): boolean {
+  return sop.created_by === actor.id || sop.owner_id === actor.id;
 }
 
 /**
- * Can this role edit the SOP's content (header + sections) at the given
- * status? Shared between the UI (decides whether to render the Edit
- * button) and the server action (enforces it at write time). The two
- * MUST stay in sync — keep them here.
- *
- * Returned_to_compliance is the special case the user asked for: BOTH
- * the DM and Compliance can edit (whichever acts first).
+ * May act as the SOP's author (edit while with the author, submit,
+ * resubmit, manage file/link, start a revision): the creator / owner,
+ * anyone allowed to edit every department's drafts, or a department
+ * manager of the SOP's department.
  */
-export function canEditSopFields(role: string, status: SopStatus): boolean {
-  if (status === "approved" || status === "archived") return false;
-  // Admin, Compliance, OPEX and Business Excellence may edit any SOP that
-  // is not locked (user spec 2026-11-08).
-  if (SOP_MANAGER_ROLES.includes(role)) return true;
-  if (role === "department_manager") {
-    return (
-      status === "draft" ||
-      status === "returned_to_dm" ||
-      status === "returned_to_compliance"
-    );
-  }
-  if (role === "compliance") {
-    return status === "pending_compliance" || status === "returned_to_compliance";
-  }
-  if (role === "business_excellence") {
-    return (
-      status === "pending_business_excellence" || status === "returned_to_be"
-    );
-  }
-  if (role === "ceo") return status === "pending_ceo";
-  return false;
+export function canActAsAuthor(actor: SopActor, sop: SopRef): boolean {
+  if (actor.permissions.has("sop.edit_any_draft")) return true;
+  if (isSopAuthor(actor, sop)) return true;
+  return actor.permissions.has("sop.create_own_dept") && inSopDepartment(actor, sop);
 }
 
-// ---------------------------------------------------------------------------
-// Transition map — single source of truth for the workflow.
-// Used by both the server action (validation) and the UI (which buttons
-// to render). Every transition declares who may perform it and whether
-// a comment is required.
-// ---------------------------------------------------------------------------
+/** File / link / new-version management (content stays locked when approved). */
+export function canManageSop(actor: SopActor, sop: SopRef): boolean {
+  return canActAsAuthor(actor, sop);
+}
+
+/** Statuses where the document sits with its author for changes. */
+const AUTHOR_STATUSES: SopStatus[] = ["draft", "returned_to_dm"];
+
+/**
+ * Can this actor edit the SOP's content at its current status? Shared by
+ * the UI and the server action. The CEO never edits content.
+ */
+export function canEditSopFields(actor: SopActor, sop: SopRef): boolean {
+  if (isSopLocked(sop.status)) return false;
+  if (actor.permissions.has("sop.edit_any_draft")) return true;
+  if (!canActAsAuthor(actor, sop)) return false;
+  return AUTHOR_STATUSES.includes(sop.status) || sop.status === "returned_to_compliance";
+}
+
+type Who =
+  | { kind: "author" }
+  | { kind: "dept_validator" }
+  | { kind: "permission"; permission: string };
+
+export type SopDecision = "submit" | "approve" | "return" | "reject" | "archive" | "reopen";
 
 export type SopTransition = {
   from: SopStatus;
   to: SopStatus;
-  allowedRoles: string[];
-  /** When true, the user MUST provide a non-empty comment. */
+  who: Who;
+  decision: SopDecision;
+  /** Only for SOPs on these routes ("legacy" = workflow_route NULL). */
+  routes?: ("standard" | "opex_authored" | "legacy")[];
   commentRequired: boolean;
-  /** Button label shown to the user. */
   label: string;
-  /** One-liner description rendered next to the button. */
   description: string;
-  /** Visual hint — Tailwind classes for the button. */
   tone: string;
 };
 
+const T_SUBMIT = "bg-amber-600 hover:bg-amber-700";
+const T_APPROVE = "bg-emerald-600 hover:bg-emerald-700";
+const T_RETURN = "bg-orange-600 hover:bg-orange-700";
+const T_REJECT = "bg-red-700 hover:bg-red-800";
+
+const OPEX: Who = { kind: "permission", permission: "sop.review_opex" };
+const COMPLIANCE: Who = { kind: "permission", permission: "sop.review_compliance" };
+const IBE: Who = { kind: "permission", permission: "sop.review_ibe" };
+const CEO: Who = { kind: "permission", permission: "sop.review_ceo" };
+const AUTHOR: Who = { kind: "author" };
+const VALIDATOR: Who = { kind: "dept_validator" };
+
+function reject(from: SopStatus, who: Who): SopTransition {
+  return {
+    from,
+    to: "rejected",
+    who,
+    decision: "reject",
+    commentRequired: true,
+    label: "Reject",
+    description: "End this submission. The reason is recorded; the author can reopen it as a new draft.",
+    tone: T_REJECT,
+  };
+}
+
 export const SOP_TRANSITIONS: SopTransition[] = [
-  // ------------------------------------------------------------ DM submits
-  {
-    from: "draft",
-    to: "pending_compliance",
-    allowedRoles: ["department_manager", "admin", "compliance", "opex", "business_excellence"],
-    commentRequired: false,
-    label: "Submit to Compliance",
-    description: "Send this draft to the Compliance team for first-stage review.",
-    tone: "bg-amber-600 hover:bg-amber-700",
-  },
-  {
-    from: "returned_to_dm",
-    to: "pending_compliance",
-    allowedRoles: ["department_manager", "admin"],
-    commentRequired: false,
-    label: "Resubmit to Compliance",
-    description: "After applying the requested changes, send the SOP back to Compliance.",
-    tone: "bg-amber-600 hover:bg-amber-700",
-  },
+  // ── Author submits / resubmits to the first stage of the route ──────────
+  { from: "draft", to: "pending_opex", who: AUTHOR, decision: "submit", routes: ["standard"], commentRequired: false,
+    label: "Submit to OPEX", description: "Send this draft to OPEX for operational review.", tone: T_SUBMIT },
+  { from: "draft", to: "pending_dept_validation", who: AUTHOR, decision: "submit", routes: ["opex_authored"], commentRequired: false,
+    label: "Submit for department validation", description: "The department manager validates the department content first.", tone: T_SUBMIT },
+  { from: "draft", to: "pending_compliance", who: AUTHOR, decision: "submit", routes: ["legacy"], commentRequired: false,
+    label: "Submit to Compliance", description: "Send this draft to Compliance.", tone: T_SUBMIT },
+  { from: "returned_to_dm", to: "pending_opex", who: AUTHOR, decision: "submit", routes: ["standard"], commentRequired: false,
+    label: "Resubmit to OPEX", description: "After applying the requested changes, send it back for review.", tone: T_SUBMIT },
+  { from: "returned_to_dm", to: "pending_dept_validation", who: AUTHOR, decision: "submit", routes: ["opex_authored"], commentRequired: false,
+    label: "Resubmit for department validation", description: "After applying the requested changes, send it back for review.", tone: T_SUBMIT },
+  { from: "returned_to_dm", to: "pending_compliance", who: AUTHOR, decision: "submit", routes: ["legacy"], commentRequired: false,
+    label: "Resubmit to Compliance", description: "After applying the requested changes, send it back to Compliance.", tone: T_SUBMIT },
+  { from: "rejected", to: "draft", who: AUTHOR, decision: "reopen", commentRequired: false,
+    label: "Reopen as draft", description: "Start a new submission from this rejected SOP.", tone: "bg-gray-600 hover:bg-gray-700" },
 
-  // ------------------------------------------------------------ Compliance reviews
-  {
-    from: "pending_compliance",
-    to: "pending_business_excellence",
-    allowedRoles: ["compliance", "admin"],
-    commentRequired: true,
-    label: "Approve & forward to Business Excellence",
-    description: "Approve at Compliance level. A comment is required and stored in the approval history.",
-    tone: "bg-emerald-600 hover:bg-emerald-700",
-  },
-  {
-    from: "pending_compliance",
-    to: "returned_to_dm",
-    allowedRoles: ["compliance", "admin"],
-    commentRequired: true,
-    label: "Reject — return to Department Manager",
-    description: "Send back for changes. A reason is required so the DM knows what to fix.",
-    tone: "bg-red-600 hover:bg-red-700",
-  },
-  {
-    from: "returned_to_compliance",
-    to: "pending_business_excellence",
-    allowedRoles: ["compliance", "admin"],
-    commentRequired: true,
-    label: "Approve & Resubmit to Business Excellence",
-    description: "After applying BE's feedback, send the SOP back to BE for review. Comment required.",
-    tone: "bg-emerald-600 hover:bg-emerald-700",
-  },
-  {
-    // NEW (workflow extension): Compliance can also bounce the SOP back
-    // to the DM if the BE feedback needs deeper rework that the original
-    // owner should handle.
-    from: "returned_to_compliance",
-    to: "returned_to_dm",
-    allowedRoles: ["compliance", "admin"],
-    commentRequired: true,
-    label: "Reject — return to Department Manager",
-    description: "Bounce back to the DM with required changes. Reason required.",
-    tone: "bg-red-600 hover:bg-red-700",
-  },
-  {
-    // NEW (workflow extension): when the SOP is back with Compliance after
-    // BE rejection, the original DM can also choose to step in, edit the
-    // content, and resubmit straight to Compliance (skipping their own
-    // returned_to_dm bucket).
-    from: "returned_to_compliance",
-    to: "pending_compliance",
-    allowedRoles: ["department_manager", "admin"],
-    commentRequired: false,
-    label: "Resubmit to Compliance",
-    description: "DM edited the SOP and is sending it back to Compliance for review.",
-    tone: "bg-amber-600 hover:bg-amber-700",
-  },
+  // ── OPEX stage (standard route) ─────────────────────────────────────────
+  { from: "pending_opex", to: "pending_compliance", who: OPEX, decision: "approve", commentRequired: true,
+    label: "Approve & forward to Compliance", description: "Approve at OPEX level. Comment required.", tone: T_APPROVE },
+  { from: "pending_opex", to: "returned_to_dm", who: OPEX, decision: "return", commentRequired: true,
+    label: "Return to author", description: "Send back for correction. Reason required.", tone: T_RETURN },
+  reject("pending_opex", OPEX),
 
-  // ------------------------------------------------------------ BE reviews
-  {
-    from: "pending_business_excellence",
-    to: "pending_ceo",
-    allowedRoles: ["business_excellence", "admin"],
-    commentRequired: true,
-    label: "Approve & forward to CEO",
-    description: "Approve at BE level and send to the CEO for final approval. Comment required.",
-    tone: "bg-emerald-600 hover:bg-emerald-700",
-  },
-  {
-    from: "pending_business_excellence",
-    to: "returned_to_compliance",
-    allowedRoles: ["business_excellence", "admin"],
-    commentRequired: true,
-    label: "Reject — return to Compliance",
-    description: "Send back to Compliance with required changes. Reason required.",
-    tone: "bg-red-600 hover:bg-red-700",
-  },
-  {
-    from: "returned_to_be",
-    to: "pending_ceo",
-    allowedRoles: ["business_excellence", "admin"],
-    commentRequired: false,
-    label: "Resubmit to CEO",
-    description: "After applying the CEO's feedback, send the SOP back to the CEO.",
-    tone: "bg-purple-600 hover:bg-purple-700",
-  },
+  // ── Department validation (OPEX-authored route) ─────────────────────────
+  { from: "pending_dept_validation", to: "pending_compliance", who: VALIDATOR, decision: "approve", commentRequired: true,
+    label: "Validate & forward to Compliance", description: "Confirm the department content is correct. Comment required.", tone: T_APPROVE },
+  { from: "pending_dept_validation", to: "returned_to_dm", who: VALIDATOR, decision: "return", commentRequired: true,
+    label: "Return to author (OPEX)", description: "Send back for correction. Reason required.", tone: T_RETURN },
 
-  // ------------------------------------------------------------ CEO reviews
-  {
-    from: "pending_ceo",
-    to: "approved",
-    allowedRoles: ["ceo", "admin"],
-    commentRequired: true,
-    label: "Final Approval",
-    description: "Approve as CEO. The SOP becomes locked and read-only across the system.",
-    tone: "bg-emerald-700 hover:bg-emerald-800",
-  },
-  {
-    from: "pending_ceo",
-    to: "returned_to_be",
-    allowedRoles: ["ceo", "admin"],
-    commentRequired: true,
-    label: "Reject — return to Business Excellence",
-    description: "Send back to BE with required changes. Reason required.",
-    tone: "bg-red-600 hover:bg-red-700",
-  },
+  // ── Compliance stage ────────────────────────────────────────────────────
+  { from: "pending_compliance", to: "pending_business_excellence", who: COMPLIANCE, decision: "approve", commentRequired: true,
+    label: "Approve & forward to IBE", description: "Approve at Compliance level. Comment required.", tone: T_APPROVE },
+  { from: "pending_compliance", to: "returned_to_dm", who: COMPLIANCE, decision: "return", commentRequired: true,
+    label: "Return to author", description: "Send back for correction. Reason required.", tone: T_RETURN },
+  reject("pending_compliance", COMPLIANCE),
+  { from: "returned_to_compliance", to: "pending_business_excellence", who: COMPLIANCE, decision: "approve", commentRequired: true,
+    label: "Approve & resubmit to IBE", description: "After applying IBE's feedback, send it back to IBE. Comment required.", tone: T_APPROVE },
+  { from: "returned_to_compliance", to: "returned_to_dm", who: COMPLIANCE, decision: "return", commentRequired: true,
+    label: "Return to author", description: "Bounce back to the author with required changes. Reason required.", tone: T_RETURN },
+  { from: "returned_to_compliance", to: "pending_compliance", who: AUTHOR, decision: "submit", commentRequired: false,
+    label: "Resubmit to Compliance", description: "The author edited the SOP and sends it back to Compliance.", tone: T_SUBMIT },
 
-  // ------------------------------------------ Archive (admin + compliance)
-  {
-    from: "approved",
-    to: "archived",
-    allowedRoles: ["admin", "compliance"],
-    commentRequired: false,
-    label: "Archive",
-    description: "Move an approved SOP to the archive. History is preserved.",
-    tone: "bg-gray-600 hover:bg-gray-700",
-  },
+  // ── IBE stage ───────────────────────────────────────────────────────────
+  { from: "pending_business_excellence", to: "pending_ceo", who: IBE, decision: "approve", commentRequired: true,
+    label: "Approve & forward to CEO", description: "Approve at IBE level and send to the CEO. Comment required.", tone: T_APPROVE },
+  { from: "pending_business_excellence", to: "returned_to_compliance", who: IBE, decision: "return", commentRequired: true,
+    label: "Return to Compliance", description: "Send back to Compliance with required changes. Reason required.", tone: T_RETURN },
+  reject("pending_business_excellence", IBE),
+  { from: "returned_to_be", to: "pending_ceo", who: IBE, decision: "approve", commentRequired: false,
+    label: "Resubmit to CEO", description: "After applying the CEO's feedback, send it back to the CEO.", tone: "bg-purple-600 hover:bg-purple-700" },
+
+  // ── CEO stage ───────────────────────────────────────────────────────────
+  { from: "pending_ceo", to: "approved", who: CEO, decision: "approve", commentRequired: true,
+    label: "Final approval", description: "Approve as CEO. The SOP is published and locked.", tone: "bg-emerald-700 hover:bg-emerald-800" },
+  { from: "pending_ceo", to: "returned_to_be", who: CEO, decision: "return", commentRequired: true,
+    label: "Return to IBE", description: "Send back to IBE with required changes. Reason required.", tone: T_RETURN },
+  reject("pending_ceo", CEO),
+
+  // ── Archive ─────────────────────────────────────────────────────────────
+  { from: "approved", to: "archived", who: { kind: "permission", permission: "sop.archive" }, decision: "archive", commentRequired: false,
+    label: "Archive", description: "Move an approved SOP to the archive. History is preserved.", tone: "bg-gray-600 hover:bg-gray-700" },
 ];
 
-/** Get the transitions available to a given role from a given status. */
-export function availableTransitions(
-  role: string,
-  status: SopStatus
-): SopTransition[] {
-  return SOP_TRANSITIONS.filter(
-    (t) => t.from === status && t.allowedRoles.includes(role)
+function routeKey(sop: SopRef): "standard" | "opex_authored" | "legacy" {
+  return sop.workflow_route === "standard" || sop.workflow_route === "opex_authored"
+    ? sop.workflow_route
+    : "legacy";
+}
+
+function whoAllows(who: Who, actor: SopActor, sop: SopRef): boolean {
+  switch (who.kind) {
+    case "author":
+      return canActAsAuthor(actor, sop);
+    case "dept_validator":
+      return actor.permissions.has("sop.validate_dept") && inSopDepartment(actor, sop);
+    case "permission":
+      return actor.permissions.has(who.permission);
+  }
+}
+
+/**
+ * Why `actor` may not take transition `t` on `sop`, or null if allowed.
+ * Segregation of duties: nobody approves at a review stage a SOP they
+ * created or own — another holder of that stage's permission must do it.
+ */
+export function transitionBlocker(actor: SopActor, sop: SopRef, t: SopTransition): string | null {
+  if (t.from !== sop.status) return "The SOP is no longer at that stage.";
+  if (t.routes && !t.routes.includes(routeKey(sop))) return "That step isn't part of this SOP's approval route.";
+  if (!whoAllows(t.who, actor, sop)) return "You are not allowed to take this action at this stage.";
+  if (t.decision === "approve" && isSopAuthor(actor, sop)) {
+    return "You can't approve a SOP you created or own — another authorised reviewer must approve it.";
+  }
+  return null;
+}
+
+/** Transitions the actor may take right now (drives the buttons). */
+export function availableTransitions(actor: SopActor, sop: SopRef): SopTransition[] {
+  return SOP_TRANSITIONS.filter((t) => transitionBlocker(actor, sop, t) === null);
+}
+
+/** The transition from the SOP's status to `to` that fits its route. */
+export function findTransition(sop: SopRef, to: SopStatus): SopTransition | undefined {
+  const rk = routeKey(sop);
+  return SOP_TRANSITIONS.find(
+    (t) => t.from === sop.status && t.to === to && (!t.routes || t.routes.includes(rk))
   );
 }
 
-/** Find a specific transition (used by the server action for validation). */
-export function findTransition(
-  from: SopStatus,
-  to: SopStatus
-): SopTransition | undefined {
-  return SOP_TRANSITIONS.find((t) => t.from === from && t.to === to);
+/** The review stage a pending status belongs to (for "awaiting you" lists). */
+export const SOP_STAGE_PERMISSION: Partial<Record<SopStatus, string>> = {
+  pending_opex: "sop.review_opex",
+  pending_dept_validation: "sop.validate_dept",
+  pending_compliance: "sop.review_compliance",
+  returned_to_compliance: "sop.review_compliance",
+  pending_business_excellence: "sop.review_ibe",
+  returned_to_be: "sop.review_ibe",
+  pending_ceo: "sop.review_ceo",
+};
+
+/**
+ * Record-level visibility (docs/RBAC.md §8). Organisation-wide users see
+ * everything. Others see a SOP of their department (or an all-departments
+ * SOP) once it is approved / archived, and — while it is in the workflow —
+ * only if they can act as its author or validate it. The author always
+ * sees their own SOP.
+ */
+export function canViewSop(actor: SopActor & { fullScope: boolean }, sop: SopRef): boolean {
+  if (actor.fullScope) return true;
+  if (isSopAuthor(actor, sop)) return true;
+  const mine = sop.is_all_departments || inSopDepartment(actor, sop);
+  if (!mine) return false;
+  if (sop.status === "approved" || sop.status === "archived") return true;
+  return canActAsAuthor(actor, sop) || actor.permissions.has("sop.validate_dept");
 }

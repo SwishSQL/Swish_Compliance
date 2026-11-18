@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { listChecks } from "@/features/checks/repository";
 import { CHECK_STATUS_LABEL, CHECK_STATUS_TONE, FREQUENCY_LABEL, type CheckStatus } from "@/features/checks/types";
@@ -12,7 +12,7 @@ export default async function TestsPage({
 }: {
   searchParams: Promise<{ status?: CheckStatus; checklist?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const sp = await searchParams;
   const checklistFilter = sp.checklist ? Number(sp.checklist) : undefined;
   const allChecks = await listChecks({
@@ -22,14 +22,14 @@ export default async function TestsPage({
   });
   // Access scoping: non-privileged users only see tests whose control is
   // under a framework in their mapped domains.
-  const scope = await getUserScope(user.id, user.role);
+  const scope = await getUserScope(user.id, user);
   const scopedIds = await getScopedIds(scope);
   const checks = scopedIds
     ? allChecks.filter(
         (ch) => ch.control_id != null && scopedIds.controlIds.includes(ch.control_id)
       )
     : allChecks;
-  const canEdit = canEditSops(user.role);
+  const canEdit = canEditSops(user);
   const controls = canEdit
     ? await queryAll<{ id: number; name: string }>(
         `SELECT id, name FROM controls WHERE is_active = 1 ORDER BY name`
