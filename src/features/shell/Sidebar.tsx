@@ -258,6 +258,7 @@ const ADMINISTRATION: Section = {
     // Users, Brands, Departments and Org Units are tabs on this one page
     // now (user spec 2026-08-17) — no separate nav entries for each.
     { href: "/admin/config", label: "Config", icon: "config" },
+    { href: "/admin/permissions", label: "Permissions", icon: "config" },
     { href: "/admin/audit-logs", label: "Audit Logs", icon: "audit-logs" },
   ],
 };
@@ -443,6 +444,7 @@ export default function Sidebar({
     ASSURANCE,
     keep(ADMINISTRATION, (href) => {
       if (href === "/admin/audit-logs") return has("admin.audit_logs");
+      if (href === "/admin/permissions") return has("admin.permissions");
       if (href === "/admin/import") return has("admin.settings");
       if (href === "/admin/config") return has("admin.users") || has("admin.settings") || has("admin.permissions");
       return has("admin.users") || has("admin.settings") || has("admin.audit_logs") || has("admin.permissions");

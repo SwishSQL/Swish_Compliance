@@ -32,7 +32,6 @@ import {
   listCapaEvidences,
 } from "./repository";
 import { extractAttachments } from "@/lib/attachments";
-import type { CapaStatus } from "./types";
 import { notify } from "@/features/notifications/service";
 
 const CreateSchema = z.object({

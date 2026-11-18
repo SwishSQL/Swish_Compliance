@@ -1,16 +1,8 @@
+import { ROLE_LABELS } from "@/lib/auth/permissions";
 import Link from "next/link";
 import { listUsers } from "./repository";
 
-const ROLE_LABEL: Record<string, string> = {
-  admin: "Administrator",
-  ceo: "CEO",
-  business_excellence: "Business Excellence",
-  compliance: "Compliance",
-  opex: "Operational Excellence",
-  department_manager: "Department Manager",
-  auditor: "Auditor",
-  viewer: "Viewer",
-};
+const ROLE_LABEL: Record<string, string> = ROLE_LABELS;
 
 const ROLE_TONE: Record<string, string> = {
   admin: "bg-rose-50 text-rose-700 border-rose-200",
@@ -21,6 +13,7 @@ const ROLE_TONE: Record<string, string> = {
   department_manager: "bg-sky-50 text-sky-700 border-sky-200",
   auditor: "bg-amber-50 text-amber-700 border-amber-200",
   viewer: "bg-gray-50 text-gray-600 border-gray-200",
+  department_member: "bg-gray-50 text-gray-700 border-gray-200",
 };
 
 function chips(names: string[]) {

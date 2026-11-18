@@ -10,6 +10,9 @@ export default async function NewUserPage() {
   const departments = await queryAll<{ id: number; name: string }>(
     `SELECT id, name FROM departments WHERE is_active = 1 ORDER BY name`
   );
+  const brands = await queryAll<{ id: number; name: string }>(
+    `SELECT id, name FROM brands WHERE is_active = 1 ORDER BY name`
+  );
 
   return (
     <Workspace
@@ -66,7 +69,7 @@ export default async function NewUserPage() {
 
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1.5">
-              Role <span className="text-red-500">*</span>
+              Primary role <span className="text-red-500">*</span>
             </label>
             <div className="space-y-2">
               {USER_ROLES.map((r) => (
@@ -78,7 +81,7 @@ export default async function NewUserPage() {
                     type="radio"
                     name="role"
                     value={r.value}
-                    defaultChecked={r.value === "viewer"}
+                    defaultChecked={r.value === "department_member"}
                     className="mt-0.5 accent-brand-700"
                     required
                   />
@@ -91,12 +94,45 @@ export default async function NewUserPage() {
             </div>
           </div>
 
+
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">
+              Additional roles <span className="text-gray-400">(optional — a user can hold several)</span>
+            </label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {USER_ROLES.map((r) => (
+                <label key={r.value} className="flex items-start gap-2 p-2 border border-gray-200 rounded-lg text-sm cursor-pointer hover:bg-gray-50">
+                  <input
+                    type="checkbox"
+                    name="extra_roles"
+                    value={r.value}
+                    defaultChecked={([] as string[]).includes(r.value)}
+                    disabled={false}
+                    className="mt-0.5 accent-brand-700"
+                  />
+                  <span>
+                    <span className="font-medium text-gray-900">{r.label}</span>
+                    <span className="block text-xs text-gray-500">{r.desc}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
           <MultiSelect
             name="department_ids"
             label="Departments (multi-select)"
             options={departments}
             placeholder="Select one or more departments…"
           />
+          <input type="hidden" name="brand_ids__present" value="1" />
+          <MultiSelect
+            name="brand_ids"
+            label="Brands (optional — leave empty for all brands)"
+            options={brands}
+            defaultSelected={[]}
+            placeholder="All brands"
+          />
+
           <p className="text-xs text-gray-500 -mt-2">
             Department defines what a non-privileged user can see — their
             domains, frameworks, controls and tests all follow from it

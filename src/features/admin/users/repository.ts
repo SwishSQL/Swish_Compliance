@@ -135,12 +135,14 @@ export async function updateUser(input: UpdateUserInput): Promise<void> {
   const primaryBrand = input.brand_ids?.[0] ?? null;
   const primaryDept = input.department_ids?.[0] ?? null;
 
+  // Only touch the legacy brand/department columns when that list was
+  // actually submitted — a form without a brand picker must not wipe it.
   await execute(
     `UPDATE users SET
        display_name  = COALESCE($2, display_name),
        role          = COALESCE($3, role),
-       brand_id      = $4,
-       department_id = $5,
+       brand_id      = CASE WHEN $7 = 1 THEN $4 ELSE brand_id END,
+       department_id = CASE WHEN $8 = 1 THEN $5 ELSE department_id END,
        is_active     = COALESCE(CAST($6 AS BIT), is_active)
      WHERE id = $1`,
     [
@@ -150,6 +152,8 @@ export async function updateUser(input: UpdateUserInput): Promise<void> {
       primaryBrand,
       primaryDept,
       input.is_active ?? null,
+      input.brand_ids !== undefined ? 1 : 0,
+      input.department_ids !== undefined ? 1 : 0,
     ]
   );
 
@@ -219,4 +223,57 @@ export async function emailExists(email: string): Promise<boolean> {
     [email]
   );
   return !!row?.exists;
+}
+
+/** Every role a user holds (user_roles, migration 007). */
+export async function getUserRoles(userId: number): Promise<string[]> {
+  const rows = await queryAll<{ role: string }>(
+    `SELECT role FROM user_roles WHERE user_id = $1 ORDER BY role`,
+    [userId]
+  );
+  return rows.map((r) => r.role);
+}
+
+/** Replace a user's roles. The primary role (users.role) is always included. */
+export async function setUserRoles(userId: number, roles: string[]): Promise<void> {
+  await execute(`DELETE FROM user_roles WHERE user_id = $1`, [userId]);
+  for (const role of Array.from(new Set(roles))) {
+    await execute(`INSERT INTO user_roles (user_id, role) VALUES ($1, $2)`, [userId, role]);
+  }
+}
+
+export type OutstandingWork = { capas: number; audits: number; tests: number; sops: number };
+
+/** Open work held by a user — shown before deactivating them. */
+export async function getOutstandingWork(userId: number): Promise<OutstandingWork> {
+  const row = await queryOne<OutstandingWork>(
+    `SELECT
+       (SELECT COUNT(*) FROM corrective_actions WHERE assigned_to = $1 AND status NOT IN ('closed','verified')) AS capas,
+       (SELECT COUNT(*) FROM audits WHERE assigned_to = $1 AND status IN ('in_progress','submitted')) AS audits,
+       (SELECT COUNT(*) FROM checks WHERE owner_user_id = $1 AND is_active = 1) AS tests,
+       (SELECT COUNT(*) FROM sops WHERE owner_id = $1 AND status NOT IN ('approved','archived','rejected')) AS sops`,
+    [userId]
+  );
+  return row ?? { capas: 0, audits: 0, tests: 0, sops: 0 };
+}
+
+/** Move a user's open work to another user. Returns how much moved. */
+export async function reassignOutstandingWork(fromId: number, toId: number): Promise<OutstandingWork> {
+  const capas = await execute(
+    `UPDATE corrective_actions SET assigned_to = $2 WHERE assigned_to = $1 AND status NOT IN ('closed','verified')`,
+    [fromId, toId]
+  );
+  const audits = await execute(
+    `UPDATE audits SET assigned_to = $2 WHERE assigned_to = $1 AND status IN ('in_progress','submitted')`,
+    [fromId, toId]
+  );
+  const tests = await execute(
+    `UPDATE checks SET owner_user_id = $2 WHERE owner_user_id = $1 AND is_active = 1`,
+    [fromId, toId]
+  );
+  const sops = await execute(
+    `UPDATE sops SET owner_id = $2 WHERE owner_id = $1 AND status NOT IN ('approved','archived','rejected')`,
+    [fromId, toId]
+  );
+  return { capas, audits, tests, sops };
 }

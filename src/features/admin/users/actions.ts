@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { requireAdmin } from "@/lib/auth/guard";
+import { requireAdmin, requirePermission } from "@/lib/auth/guard";
+import { ROLES, ROLE_LABELS, isRole } from "@/lib/auth/permissions";
 import { execute } from "@/lib/db";
 import {
   createUser,
@@ -11,22 +12,25 @@ import {
   resetUserPassword,
   emailExists,
   getUserById,
+  getUserRoles,
+  setUserRoles,
+  reassignOutstandingWork,
 } from "./repository";
 import { notify } from "@/features/notifications/service";
 
-// Must match the catalog in src/lib/auth/guard.ts (USER_ROLES) — those
-// are the roles the rest of the app reasons about. SOP workflow v2 swapped
-// branch_manager → department_manager and added ceo as the final approver.
-const VALID_ROLES = [
-  "admin",
-  "ceo",
-  "business_excellence",
-  "compliance",
-  "opex",
-  "department_manager",
-  "auditor",
-  "viewer",
-] as const;
+// The role catalog lives in src/lib/auth/permissions.ts (docs/RBAC.md).
+const VALID_ROLES = ROLES;
+
+/** Extra roles ticked on the form (any valid role), primary role first. */
+function selectedRoles(formData: FormData, primary: string): string[] {
+  const extra = formData
+    .getAll("extra_roles")
+    .map(String)
+    .filter((r) => isRole(r));
+  return Array.from(new Set([primary, ...extra]));
+}
+
+const label = (r: string) => (isRole(r) ? ROLE_LABELS[r] : r);
 
 const CreateSchema = z.object({
   email: z.string().email(),
@@ -75,8 +79,10 @@ export async function createUserAction(formData: FormData) {
   const brand_ids = getAllNumeric(formData, "brand_ids");
   const department_ids = getAllNumeric(formData, "department_ids");
   const domain_ids = getAllNumeric(formData, "domain_ids");
+  const roles = selectedRoles(formData, parsed.role);
 
   const newId = await createUser({ ...parsed, brand_ids, department_ids, domain_ids });
+  await setUserRoles(newId, roles);
 
   await execute(
     `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
@@ -88,6 +94,7 @@ export async function createUserAction(formData: FormData) {
       JSON.stringify({
         email: parsed.email,
         role: parsed.role,
+        roles,
         brand_ids,
         department_ids,
         domain_ids,
@@ -101,7 +108,7 @@ export async function createUserAction(formData: FormData) {
     actor: { id: admin.id, name: admin.displayName, role: admin.role },
     kind: "user:created",
     title: `Welcome to Swish Compliance, ${parsed.display_name}!`,
-    body: `Your account was created by ${admin.displayName} with the role: ${parsed.role}. Change your password from your profile after first login.`,
+    body: `Your account was created by ${admin.displayName} with the role(s): ${roles.map(label).join(", ")}. Change your password from your profile after first login.`,
     severity: "info",
   });
 
@@ -120,21 +127,23 @@ export async function updateUserAction(formData: FormData) {
 
   const before = await getUserById(parsed.id);
   if (!before) throw new Error("User not found.");
+  const beforeRoles = await getUserRoles(parsed.id);
+  const roles = selectedRoles(formData, parsed.role);
 
-  // Safety: don't let an admin demote / deactivate their own account
-  if (
-    before.role === "admin" &&
-    (parsed.role !== "admin" || !parsed.is_active) &&
-    before.id === admin.id
-  ) {
-    throw new Error("You can't demote or deactivate your own admin account.");
+  // Safety: an admin can't remove their own admin role or deactivate themselves.
+  if (before.id === admin.id && (!roles.includes("admin") || !parsed.is_active)) {
+    throw new Error("You can't remove your own admin role or deactivate your own account.");
   }
 
-  const brand_ids = getAllNumeric(formData, "brand_ids");
-  const department_ids = getAllNumeric(formData, "department_ids");
-  const domain_ids = getAllNumeric(formData, "domain_ids");
+  // A scope list is only replaced when the form actually carried its
+  // picker (marker field) — otherwise saving would wipe it.
+  const has = (name: string) => formData.has(`${name}__present`);
+  const brand_ids = has("brand_ids") ? getAllNumeric(formData, "brand_ids") : undefined;
+  const department_ids = has("department_ids") ? getAllNumeric(formData, "department_ids") : undefined;
+  const domain_ids = has("domain_ids") ? getAllNumeric(formData, "domain_ids") : undefined;
 
   await updateUser({ ...parsed, brand_ids, department_ids, domain_ids });
+  await setUserRoles(parsed.id, roles);
 
   await execute(
     `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
@@ -146,6 +155,7 @@ export async function updateUserAction(formData: FormData) {
       JSON.stringify({
         before: {
           role: before.role,
+          roles: beforeRoles,
           is_active: before.is_active,
           brand_ids: before.brand_ids,
           department_ids: before.department_ids,
@@ -153,23 +163,26 @@ export async function updateUserAction(formData: FormData) {
         },
         after: {
           role: parsed.role,
+          roles,
           is_active: parsed.is_active,
-          brand_ids,
-          department_ids,
-          domain_ids,
+          brand_ids: brand_ids ?? before.brand_ids,
+          department_ids: department_ids ?? before.department_ids,
+          domain_ids: domain_ids ?? before.domain_ids,
         },
       }),
     ]
   );
 
-  // If the role was changed, notify the affected user.
-  if (before.role !== parsed.role) {
+  // If the roles changed, notify the affected user.
+  const sameRoles =
+    beforeRoles.length === roles.length && roles.every((r) => beforeRoles.includes(r));
+  if (!sameRoles || before.role !== parsed.role) {
     await notify({
       audience: { userIds: [parsed.id] },
       actor: { id: admin.id, name: admin.displayName, role: admin.role },
       kind: "user:role_changed",
-      title: `Your role has changed to ${parsed.role.replace("_", " ")}`,
-      body: `${admin.displayName} updated your role from ${before.role.replace("_", " ")} to ${parsed.role.replace("_", " ")}.`,
+      title: `Your roles have changed`,
+      body: `${admin.displayName} set your role(s) to: ${roles.map(label).join(", ")}.`,
       severity: "info",
     });
   }
@@ -191,4 +204,38 @@ export async function resetPasswordAction(formData: FormData) {
   );
 
   revalidatePath(`/admin/users/${parsed.id}`);
+}
+
+/**
+ * Move a user's open work (CAPAs, audits being performed, test ownership,
+ * SOPs in the workflow) to another active user — typically before
+ * deactivating them. Audit-logged.
+ */
+export async function reassignWorkAction(formData: FormData) {
+  const admin = await requirePermission("admin.reassign");
+  const fromId = Number(formData.get("from_user_id"));
+  const toId = Number(formData.get("to_user_id"));
+  if (!Number.isInteger(fromId) || fromId <= 0 || !Number.isInteger(toId) || toId <= 0) {
+    throw new Error("Pick the user to hand the work to.");
+  }
+  if (fromId === toId) throw new Error("Pick a different user.");
+  const target = await getUserById(toId);
+  if (!target || !target.is_active) throw new Error("The receiving user must be active.");
+
+  const moved = await reassignOutstandingWork(fromId, toId);
+  await execute(
+    `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
+     VALUES ($1, $2, 'user:work_reassigned', 'user', $3, $4)`,
+    [admin.id, admin.email, fromId, JSON.stringify({ to_user_id: toId, moved, by_user_name: admin.displayName })]
+  );
+  await notify({
+    audience: { userIds: [toId] },
+    actor: { id: admin.id, name: admin.displayName, role: admin.role },
+    kind: "user:work_reassigned",
+    title: `Work was reassigned to you`,
+    body: `${admin.displayName} handed you ${moved.capas} CAPA(s), ${moved.audits} audit(s), ${moved.tests} test(s) and ${moved.sops} SOP(s).`,
+    severity: "info",
+  });
+  revalidatePath(`/admin/users/${fromId}`);
+  revalidatePath("/admin/config");
 }
