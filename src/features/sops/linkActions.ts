@@ -16,7 +16,7 @@ type Kind = keyof typeof TABLE;
 
 async function setLink(formData: FormData, kind: Kind, link: boolean) {
   const user = await requireUser();
-  if (!canEditSops(user.role)) throw new Error("Not authorized.");
+  if (!canEditSops(user)) throw new Error("Not authorized.");
   const sopId = Number(formData.get("sop_id"));
   const targetId = Number(formData.get("target_id"));
   if (!Number.isInteger(sopId) || sopId <= 0) throw new Error("Invalid SOP.");

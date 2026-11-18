@@ -25,7 +25,7 @@ export default async function NewAuditPage({
   // Access scoping (user spec): whoever creates audits only sees the
   // brands / departments / domains (and their frameworks/controls/tests)
   // they have access to. Full-visibility roles see everything.
-  const scope = await getUserScope(user.id, user.role);
+  const scope = await getUserScope(user.id, user);
   const scopedIds = await getScopedIds(scope);
 
   const [allBrands, allDepartments, policies, assignees, reviewerUsers, fullGraph] =

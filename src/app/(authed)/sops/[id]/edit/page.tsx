@@ -13,6 +13,7 @@ import {
   SOP_STATUS_TONE,
   canEditSopFields,
 } from "@/features/sops/types";
+import { getUserScope } from "@/lib/auth/access";
 
 export default async function EditSopPage({
   params,
@@ -24,7 +25,8 @@ export default async function EditSopPage({
   const id = Number(idStr);
   const sop = await getSopById(id);
   if (!sop) notFound();
-  if (!canEditSopFields(user.role, sop.status)) {
+  const scope = await getUserScope(user.id, user);
+  if (!canEditSopFields({ id: user.id, permissions: user.permissions, departmentIds: scope.departmentIds }, sop)) {
     redirect(`/sops/${id}`);
   }
 

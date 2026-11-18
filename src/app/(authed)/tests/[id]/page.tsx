@@ -41,7 +41,7 @@ export default async function CheckDetailPage({
   );
 
   // "Link checklist" candidates: active checklists not already linked.
-  const canLink = canEditSops(user.role);
+  const canLink = canEditSops(user);
   const linkedTemplateIds = new Set(linkedItems.map((i) => i.template_id));
   const linkableChecklists = canLink
     ? checklists.filter((cl) => !linkedTemplateIds.has(cl.id))

@@ -376,7 +376,7 @@ export async function deleteAuditAttachmentAction(formData: FormData) {
   if (!audit) throw new Error("Audit not found.");
   // Owner/assignee/admin may manage their audit's evidence; compliance
   // may also remove it (governance). Others blocked.
-  if (!canDeleteOrArchive(user.role)) assertCanEditAudit(audit, user);
+  if (!canDeleteOrArchive(user)) assertCanEditAudit(audit, user);
 
   await deleteAuditAttachment(attachmentId);
   await execute(
@@ -651,7 +651,7 @@ export async function cancelAuditAction(formData: FormData) {
   }
 
   // Cancel = archive of an audit; gated to admin + compliance (user spec).
-  if (!canDeleteOrArchive(user.role)) {
+  if (!canDeleteOrArchive(user)) {
     throw new Error("Only admin or compliance can cancel an audit.");
   }
 

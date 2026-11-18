@@ -8,7 +8,7 @@ import { listOptions } from "@/features/config/repository";
 
 export default async function NewTemplatePage() {
   const user = await requireUser();
-  if (!canEditSops(user.role)) redirect("/checklists/templates");
+  if (!canEditSops(user)) redirect("/checklists/templates");
 
   const dbCategories = await listOptions("checklist_category", true);
   const categories =

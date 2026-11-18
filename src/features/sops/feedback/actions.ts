@@ -128,7 +128,7 @@ const RespondSchema = z.object({
 export async function respondSopFeedbackAction(formData: FormData) {
   const user = await requireUser();
   const back = safeBack(formData.get("returnTo"), "/sops/feedback?view=all");
-  if (!canTriageSopFeedback(user.role)) redirect(back);
+  if (!canTriageSopFeedback(user)) redirect(back);
   const d = RespondSchema.parse({
     id: formData.get("id"),
     response: formData.get("response") ?? "",

@@ -27,7 +27,7 @@ export default async function ControlsPage({
   });
   // Access scoping: non-privileged users only see controls under
   // frameworks in their mapped domains.
-  const scope = await getUserScope(user.id, user.role);
+  const scope = await getUserScope(user.id, user);
   const scopedIds = await getScopedIds(scope);
   const controls = scopedIds
     ? allControls.filter(
@@ -82,7 +82,7 @@ export default async function ControlsPage({
               ↻ Recompute health
             </button>
           </form>
-          {canEditSops(user.role) && (
+          {canEditSops(user) && (
             <Link
               href="/controls/new"
               className="bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"

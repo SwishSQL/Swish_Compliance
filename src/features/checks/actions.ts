@@ -47,7 +47,7 @@ function nullEmpty<T extends Record<string, FormDataEntryValue>>(o: T) {
 
 export async function createCheckAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role)) throw new Error("Not authorized.");
+  if (!canEditSops(user)) throw new Error("Not authorized.");
   const parsed = CreateSchema.parse(nullEmpty(Object.fromEntries(formData.entries())));
   const id = await createCheck(parsed);
   await execute(
@@ -75,7 +75,7 @@ export async function createCheckAction(formData: FormData) {
  */
 export async function setCheckOwnerAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role) && user.role !== "compliance") {
+  if (!canEditSops(user)) {
     throw new Error("Only admin, Business Excellence, or Compliance can change the test owner.");
   }
   const id = Number(formData.get("id"));

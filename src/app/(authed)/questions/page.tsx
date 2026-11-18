@@ -41,7 +41,7 @@ export default async function QuestionsPage({
   // isn't wired to any control yet (checklist authored but not linked to
   // a test) stays visible to everyone — hiding it would make newly
   // authored content silently disappear instead of just being unscored.
-  const scope = await getUserScope(user.id, user.role);
+  const scope = await getUserScope(user.id, user);
   const scopedIds = await getScopedIds(scope);
   const scopedQuestions = scopedIds
     ? allQuestions.filter(

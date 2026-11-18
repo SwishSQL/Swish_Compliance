@@ -12,7 +12,7 @@ export default async function NewControlPage({
   searchParams: Promise<{ framework?: string }>;
 }) {
   const user = await requireUser();
-  if (!canEditSops(user.role)) redirect("/controls");
+  if (!canEditSops(user)) redirect("/controls");
   const sp = await searchParams;
   const presetFramework = sp.framework ? Number(sp.framework) : null;
 

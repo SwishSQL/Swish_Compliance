@@ -81,7 +81,7 @@ export async function listCapas(filters: {
   return queryAll<Capa>(
     `SELECT TOP (200) ${CAPA_SELECT} ${where}
      ORDER BY
-       CASE c.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'submitted' THEN 2 ELSE 3 END,
+       CASE WHEN c.status IN ('open','assigned') THEN 0 WHEN c.status IN ('in_progress','returned','rejected') THEN 1 WHEN c.status IN ('pending_manager_review','pending_compliance_verification','submitted') THEN 2 ELSE 3 END,
        CASE WHEN c.due_date IS NULL THEN 1 ELSE 0 END, c.due_date, c.id DESC`,
     params
   );
@@ -453,7 +453,7 @@ export async function autoCreateCapasForAudit(
          CAST(base.n + ROW_NUMBER() OVER (ORDER BY i.sort_order, i.id) AS NVARCHAR(20)) AS seq,
          LEFT(i.question, 250) AS title,
          CASE WHEN i.is_critical = 1 THEN 'critical' ELSE 'medium' END AS severity,
-         CASE WHEN d.manager_id IS NOT NULL THEN 'in_progress' ELSE 'open' END AS status
+         CASE WHEN d.manager_id IS NOT NULL THEN 'assigned' ELSE 'open' END AS status
        FROM audits a
        JOIN audit_responses r ON r.audit_id = a.id AND ${SHORTFALL_SQL}
        JOIN checklist_items i ON i.id = r.item_id
@@ -569,7 +569,7 @@ export async function upsertCapaFromFinding(input: {
     // as a separate statement so it can't reintroduce the type clash.
     await execute(
       `UPDATE corrective_actions
-         SET status = 'in_progress'
+         SET status = 'assigned'
        WHERE id = $1
          AND status = 'open'
          AND assigned_to IS NOT NULL`,
@@ -603,7 +603,7 @@ export async function upsertCapaFromFinding(input: {
      OUTPUT INSERTED.id
      VALUES ($1, $2, NULL, $3, $4, $5,
              CAST($6 AS INT), CAST($7 AS INT), $8, CAST($9 AS INT),
-             CAST($10 AS DATE), CAST($11 AS DATE), $12, $13, 'in_progress')`,
+             CAST($10 AS DATE), CAST($11 AS DATE), $12, $13, 'assigned')`,
     [
       code,
       input.title,
@@ -703,6 +703,22 @@ export async function transitionCapa(
     );
   } else if (next === "open") {
     await execute(`UPDATE corrective_actions SET status = 'open' WHERE id = $1`, [id]);
+  } else if (next === "returned") {
+    await execute(
+      `UPDATE corrective_actions SET status = 'returned', submitted_at = NULL,
+         rejection_reason = COALESCE($2, rejection_reason)
+       WHERE id = $1`,
+      [id, data.resolution_note ?? null]
+    );
+  } else {
+    // assigned / pending_manager_review / pending_compliance_verification
+    await execute(
+      `UPDATE corrective_actions SET status = $2,
+         submitted_at = CASE WHEN $2 IN ('pending_manager_review','pending_compliance_verification')
+                             THEN COALESCE(submitted_at, SYSUTCDATETIME()) ELSE submitted_at END
+       WHERE id = $1`,
+      [id, next]
+    );
   }
 
   // Verifying/closing a CAPA resolves its audit finding (and reopening
@@ -712,7 +728,7 @@ export async function transitionCapa(
 
 export async function pendingCapaCount(): Promise<number> {
   const row = await queryOne<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM corrective_actions WHERE status IN ('open','in_progress','submitted')`
+    `SELECT COUNT(*) AS n FROM corrective_actions WHERE status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted')`
   );
   return row?.n ?? 0;
 }

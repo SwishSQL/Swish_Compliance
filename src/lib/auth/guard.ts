@@ -1,88 +1,148 @@
 import "server-only";
+import { cache } from "react";
 import { redirect } from "next/navigation";
 import { getSession, type SessionUser } from "@/lib/auth/session";
+import { queryAll, queryOne } from "@/lib/db";
+import {
+  ROLES,
+  ROLE_LABELS,
+  ROLE_DESCRIPTIONS,
+  effectivePermissions,
+  can,
+  hasRole,
+  type Permission,
+  type PermissionOverride,
+} from "@/lib/auth/permissions";
+
+/**
+ * The signed-in user, re-read from the database on every request (once per
+ * request, via React cache). The JWT only proves identity: roles, active
+ * flag and permissions always come from the DB, so a role change or a
+ * deactivation takes effect immediately instead of when the 8 h token
+ * expires.
+ */
+export type AuthUser = SessionUser & {
+  /** Every role the user holds (user_roles), primary role included. */
+  roles: string[];
+  /** Effective permissions: union of the roles' defaults + admin overrides. */
+  permissions: ReadonlySet<Permission>;
+};
+
+const loadAuthUser = cache(async (id: number): Promise<AuthUser | null> => {
+  const row = await queryOne<{
+    id: number;
+    email: string;
+    display_name: string;
+    role: string;
+    brand_id: number | null;
+    department_id: number | null;
+    is_active: boolean;
+  }>(
+    `SELECT id, email, display_name, role, brand_id, department_id, is_active
+     FROM users WHERE id = $1`,
+    [id]
+  );
+  if (!row || !row.is_active) return null;
+  const [roleRows, overrides] = await Promise.all([
+    queryAll<{ role: string }>(`SELECT role FROM user_roles WHERE user_id = $1`, [id]),
+    loadPermissionOverrides(),
+  ]);
+  const roles = Array.from(new Set([row.role, ...roleRows.map((r) => r.role)])).filter(Boolean);
+  return {
+    id: row.id,
+    email: row.email,
+    displayName: row.display_name,
+    role: row.role,
+    brandId: row.brand_id,
+    departmentId: row.department_id,
+    roles,
+    permissions: effectivePermissions(roles, overrides),
+  };
+});
+
+/** Admin overrides of the default matrix (role_permissions, migration 007). */
+export const loadPermissionOverrides = cache(async (): Promise<PermissionOverride[]> => {
+  return queryAll<PermissionOverride>(
+    `SELECT role, permission, allowed FROM role_permissions`
+  );
+});
+
+/** For route handlers: the signed-in, active user, or null (no redirect). */
+export async function getAuthUser(): Promise<AuthUser | null> {
+  const session = await getSession();
+  return session ? loadAuthUser(session.id) : null;
+}
 
 /** Use in server components / actions to require an authenticated user. */
-export async function requireUser(): Promise<SessionUser> {
-  const user = await getSession();
+export async function requireUser(): Promise<AuthUser> {
+  const session = await getSession();
+  if (!session) redirect("/login");
+  const user = await loadAuthUser(session.id);
   if (!user) redirect("/login");
   return user;
 }
 
 /** Require one of a set of roles, otherwise redirect to /my-work. */
-export async function requireRole(roles: string[]): Promise<SessionUser> {
+export async function requireRole(roles: string[]): Promise<AuthUser> {
   const user = await requireUser();
-  if (!roles.includes(user.role)) redirect("/my-work");
+  if (!hasRole(user, ...roles)) redirect("/my-work");
   return user;
 }
 
-/** Require admin role. */
-export async function requireAdmin(): Promise<SessionUser> {
-  return requireRole(["admin"]);
+/** Require a permission, otherwise redirect to /my-work. */
+export async function requirePermission(permission: Permission): Promise<AuthUser> {
+  const user = await requireUser();
+  if (!can(user, permission)) redirect("/my-work");
+  return user;
 }
+
+/** Throwing variant for server actions. */
+export function assertPermission(user: AuthUser, permission: Permission, message?: string): void {
+  if (!can(user, permission)) throw new Error(message ?? "Not authorized.");
+}
+
+/** Require the user-management permission (System Admin). */
+export async function requireAdmin(): Promise<AuthUser> {
+  return requirePermission("admin.users");
+}
+
+export { can, hasRole };
+export type { Permission };
 
 // ---------------------------------------------------------------------------
-// SOP workflow v2 helpers (4-stage approval)
-//   Department Manager → Compliance → Business Excellence → CEO
+// Legacy helper names, now backed by permissions (docs/RBAC.md).
+// They take the AuthUser (anything with a permission set).
 // ---------------------------------------------------------------------------
+type P = { permissions: ReadonlySet<string> };
 
-/** Who can create a new SOP. */
-export function canCreateSops(role: string): boolean {
-  return role === "department_manager" || role === "admin";
+/** Who can create a new SOP (any department, or their own). */
+export function canCreateSops(user: P): boolean {
+  return user.permissions.has("sop.create_any") || user.permissions.has("sop.create_own_dept");
 }
 
-/** First-stage reviewer: Compliance team. */
-export function canReviewAtCompliance(role: string): boolean {
-  return role === "compliance" || role === "admin";
+/** GRC library edit: domains, frameworks, controls, tests, checklists, links. */
+export function canEditSops(user: P): boolean {
+  return user.permissions.has("grc.edit");
 }
 
-/** Second-stage reviewer: Business Excellence. */
-export function canReviewAtBE(role: string): boolean {
-  return role === "business_excellence" || role === "admin";
+/** Whether the user can open /admin/*. */
+export function canAccessAdmin(user: P): boolean {
+  return (
+    user.permissions.has("admin.users") ||
+    user.permissions.has("admin.settings") ||
+    user.permissions.has("admin.audit_logs") ||
+    user.permissions.has("admin.permissions")
+  );
 }
 
-/** Final-stage reviewer: CEO. */
-export function canReviewAtCEO(role: string): boolean {
-  return role === "ceo" || role === "admin";
+/** Delete / archive of governed records. */
+export function canDeleteOrArchive(user: P): boolean {
+  return user.permissions.has("grc.delete");
 }
 
-// ---------------------------------------------------------------------------
-// Legacy helpers kept for non-SOP modules (CAPA verification, etc.)
-// ---------------------------------------------------------------------------
-
-/** Whether the given role is allowed to approve / verify CAPAs. */
-export function canApproveSops(role: string): boolean {
-  return role === "admin" || role === "business_excellence";
-}
-
-/** Whether the role can create / edit checklists, controls, checks, etc. */
-export function canEditSops(role: string): boolean {
-  return ["admin", "business_excellence", "compliance", "opex"].includes(role);
-}
-
-/** Whether the given role can access /admin/*. */
-export function canAccessAdmin(role: string): boolean {
-  return role === "admin";
-}
-
-/**
- * Delete / archive of governed records (SOPs, frameworks, controls,
- * tests, checklists, questions, audits, CAPAs and their evidence) is
- * restricted to admin + compliance only (user spec 2026-07-09).
- * Deliberately NARROWER than canEditSops (which also allows BE/opex).
- */
-export function canDeleteOrArchive(role: string): boolean {
-  return role === "admin" || role === "compliance";
-}
-
-/** All available user roles in the system. */
-export const USER_ROLES = [
-  { value: "admin",                label: "Administrator",         desc: "Full access including user management and system configuration" },
-  { value: "ceo",                  label: "CEO",                   desc: "Final approval authority on SOPs after Business Excellence" },
-  { value: "business_excellence",  label: "Business Excellence (IBE)", desc: "Second-stage SOP review and CAPA verification" },
-  { value: "compliance",           label: "Compliance team",       desc: "First-stage SOP review; authors checklists, controls and checks" },
-  { value: "opex",                 label: "Operational Excellence (OPEX)", desc: "SOP creation/update/control governance, internal process audits and improvement project lifecycle" },
-  { value: "department_manager",   label: "Department Manager",    desc: "Authors SOPs for their department and handles assigned CAPAs" },
-  { value: "auditor",              label: "Auditor",               desc: "Conducts on-site audits and records test results" },
-  { value: "viewer",               label: "Viewer",                desc: "Read-only access to reports and current data" },
-] as const;
+/** All roles, for the user admin screens. */
+export const USER_ROLES = ROLES.map((value) => ({
+  value,
+  label: ROLE_LABELS[value],
+  desc: ROLE_DESCRIPTIONS[value],
+}));

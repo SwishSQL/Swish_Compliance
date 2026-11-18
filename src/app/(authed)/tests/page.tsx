@@ -22,14 +22,14 @@ export default async function TestsPage({
   });
   // Access scoping: non-privileged users only see tests whose control is
   // under a framework in their mapped domains.
-  const scope = await getUserScope(user.id, user.role);
+  const scope = await getUserScope(user.id, user);
   const scopedIds = await getScopedIds(scope);
   const checks = scopedIds
     ? allChecks.filter(
         (ch) => ch.control_id != null && scopedIds.controlIds.includes(ch.control_id)
       )
     : allChecks;
-  const canEdit = canEditSops(user.role);
+  const canEdit = canEditSops(user);
   const controls = canEdit
     ? await queryAll<{ id: number; name: string }>(
         `SELECT id, name FROM controls WHERE is_active = 1 ORDER BY name`

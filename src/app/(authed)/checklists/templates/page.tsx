@@ -63,7 +63,7 @@ export default async function ChecklistTemplatesPage({
         count={{ shown: templates.length, total: all.length, noun: "checklists" }}
       />
       <div className="flex items-center gap-3 justify-end mb-4">
-        {canEditSops(user.role) && (
+        {canEditSops(user) && (
           <Link
             href="/checklists/templates/new"
             className="bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"

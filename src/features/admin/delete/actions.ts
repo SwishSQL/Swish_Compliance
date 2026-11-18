@@ -20,7 +20,7 @@ export async function getDeleteImpactAction(
   id: number
 ): Promise<DeleteImpact & { allowed: boolean }> {
   const user = await requireUser();
-  if (!canDeleteOrArchive(user.role)) {
+  if (!canDeleteOrArchive(user)) {
     return { allowed: false, exists: false, title: "", rows: [], blockedReason: null };
   }
   const impact = await getDeleteImpact(type, id);
@@ -40,7 +40,7 @@ export async function deleteEntityAction(
   id: number
 ): Promise<{ ok: true; redirectTo: string } | { ok: false; error: string }> {
   const user = await requireUser();
-  if (!canDeleteOrArchive(user.role)) {
+  if (!canDeleteOrArchive(user)) {
     return { ok: false, error: "Only admin or compliance can delete this." };
   }
   try {

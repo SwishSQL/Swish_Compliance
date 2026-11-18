@@ -24,7 +24,7 @@ function nullEmpty<T extends Record<string, FormDataEntryValue>>(o: T) {
 
 export async function createDomainAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role)) throw new Error("Not authorized.");
+  if (!canEditSops(user)) throw new Error("Not authorized.");
 
   const parsed = CreateSchema.parse(nullEmpty(Object.fromEntries(formData.entries())));
 

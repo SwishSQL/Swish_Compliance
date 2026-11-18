@@ -12,7 +12,7 @@ export default async function NewFrameworkPage({
   searchParams: Promise<{ domain?: string }>;
 }) {
   const user = await requireUser();
-  if (!canEditSops(user.role)) redirect("/frameworks");
+  if (!canEditSops(user)) redirect("/frameworks");
   const sp = await searchParams;
   const presetDomain = sp.domain ? Number(sp.domain) : null;
 

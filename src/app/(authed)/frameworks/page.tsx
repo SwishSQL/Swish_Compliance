@@ -21,7 +21,7 @@ export default async function FrameworksPage({ searchParams }: { searchParams: P
   const [allFrameworks, lin] = await Promise.all([listFrameworks(), loadLineage()]);
   // Access scoping: non-privileged users only see frameworks in their
   // mapped domains.
-  const scope = await getUserScope(user.id, user.role);
+  const scope = await getUserScope(user.id, user);
   const scopedIds = await getScopedIds(scope);
   const scoped = scopedIds
     ? allFrameworks.filter((f) => scopedIds.frameworkIds.includes(f.id))
@@ -58,7 +58,7 @@ export default async function FrameworksPage({ searchParams }: { searchParams: P
       sessionLabel="Session"
       userLabel={user.displayName}
     >
-      {canEditSops(user.role) && (
+      {canEditSops(user) && (
         <div className="flex justify-end mb-4">
           <Link
             href="/frameworks/new"

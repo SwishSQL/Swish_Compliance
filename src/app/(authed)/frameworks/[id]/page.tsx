@@ -28,8 +28,8 @@ export default async function FrameworkDetailPage({
   const fw = await getFramework(id);
   if (!fw) notFound();
   const controls = await listControls({ framework_id: id });
-  const isAdmin = canAccessAdmin(user.role);
-  const canLink = canEditSops(user.role);
+  const isAdmin = canAccessAdmin(user);
+  const canLink = canEditSops(user);
   // Controls not yet under this framework — candidates for "Link control".
   const linkableControls = canLink
     ? await queryAll<{ id: number; code: string | null; name: string; framework_name: string | null }>(
@@ -136,7 +136,7 @@ export default async function FrameworkDetailPage({
                 </button>
               </form>
             )}
-            {canDeleteOrArchive(user.role) && (
+            {canDeleteOrArchive(user) && (
               <DeleteEntityButton entityType="framework" entityId={fw.id} label="Framework" />
             )}
           </div>

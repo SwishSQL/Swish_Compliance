@@ -24,7 +24,7 @@ export default async function DomainsPage({ searchParams }: { searchParams: Prom
   ]);
 
   // Access scoping: non-privileged users only see their mapped domains.
-  const scope = await getUserScope(user.id, user.role);
+  const scope = await getUserScope(user.id, user);
   const scoped = scope.full
     ? allDomains
     : allDomains.filter((d) => scope.domainIds.includes(d.id));
@@ -73,7 +73,7 @@ export default async function DomainsPage({ searchParams }: { searchParams: Prom
           Domains group frameworks by responsibility area. Click a domain to
           expand it and see every framework, SOP and department linked to it.
         </p>
-        {canEditSops(user.role) && (
+        {canEditSops(user) && (
           <Link
             href="/domains/new"
             className="shrink-0 inline-flex items-center gap-1.5 bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"
@@ -104,8 +104,8 @@ export default async function DomainsPage({ searchParams }: { searchParams: Prom
 
       <DomainAccordionGrid
         domains={domainsWithDetail}
-        canEdit={canEditSops(user.role)}
-        canDelete={canDeleteOrArchive(user.role)}
+        canEdit={canEditSops(user)}
+        canDelete={canDeleteOrArchive(user)}
       />
     </Workspace>
   );

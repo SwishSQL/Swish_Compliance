@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requireUser, canCreateSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { listSops } from "@/features/sops/repository";
-import { SOP_STATUS_LABEL, SOP_STATUS_TONE, type SopStatus } from "@/features/sops/types";
+import { SOP_STATUS_LABEL, SOP_STATUS_TONE, canViewSop, type SopStatus } from "@/features/sops/types";
 import { queryOne } from "@/lib/db";
 import { getUserScope } from "@/lib/auth/access";
 import { importRecruitmentSopAction } from "@/features/admin/seeds/actions";
@@ -24,15 +24,21 @@ export default async function SopsPage({
   });
   // Access scoping (user spec): non-privileged users only see SOPs in
   // their department scope. is_all_departments SOPs stay visible to all.
-  const scope = await getUserScope(user.id, user.role);
+  const scope = await getUserScope(user.id, user);
+  // Same record-level rule as the detail page (canViewSop): department
+  // members see approved SOPs; drafts only reach their author, the
+  // department's manager and organisation-wide reviewers.
+  const actor = { id: user.id, permissions: user.permissions, departmentIds: scope.departmentIds, fullScope: scope.full };
   const rows = scope.full
     ? listed.rows
-    : listed.rows.filter(
-        (r) =>
-          r.is_all_departments ||
-          // A SOP can name several departments (migration 052) — seeing any
-          // one of them in scope is enough.
-          r.department_ids.some((id) => scope.departmentIds.includes(id))
+    : listed.rows.filter((r) =>
+        canViewSop(actor, {
+          status: r.status,
+          created_by: r.created_by ?? null,
+          owner_id: r.owner_id ?? null,
+          department_ids: r.department_ids,
+          is_all_departments: r.is_all_departments,
+        })
       );
   const total = rows.length;
   const openFb = await openFeedbackBySop();
@@ -48,7 +54,7 @@ export default async function SopsPage({
   // Admin-only: surface the one-click Recruitment SOP importer right on
   // this page (in addition to Admin Home), so it's findable where SOPs
   // actually live. Hide entirely once the seed is in the system.
-  const isAdmin = user.role === "admin";
+  const isAdmin = user.permissions.has("admin.settings");
   const seededSop = isAdmin
     ? await queryOne<{ id: number }>(
         `SELECT TOP (1) id FROM sops WHERE code = 'HRD-REC-01'`
@@ -115,7 +121,7 @@ export default async function SopsPage({
               </button>
             </form>
           )}
-          {canCreateSops(user.role) && (
+          {canCreateSops(user) && (
             <Link
               href="/sops/new"
               className="bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"

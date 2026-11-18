@@ -56,7 +56,7 @@ const UpdateSchema = z.object({
  */
 export async function updateControlAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role) && user.role !== "compliance") {
+  if (!canEditSops(user)) {
     throw new Error("Only admin, Business Excellence, or Compliance can edit controls.");
   }
   const parsed = UpdateSchema.parse(
@@ -90,7 +90,7 @@ export async function updateControlAction(formData: FormData) {
 
 export async function createControlAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role)) throw new Error("Not authorized.");
+  if (!canEditSops(user)) throw new Error("Not authorized.");
   const parsed = CreateSchema.parse(nullEmpty(Object.fromEntries(formData.entries())));
   const id = await createControl({ ...parsed, created_by: user.id });
   await execute(
@@ -104,7 +104,7 @@ export async function createControlAction(formData: FormData) {
 
 export async function linkControlAction(formData: FormData) {
   const user = await requireUser();
-  if (!canEditSops(user.role)) throw new Error("Not authorized.");
+  if (!canEditSops(user)) throw new Error("Not authorized.");
   const parsed = LinkSchema.parse(Object.fromEntries(formData.entries()));
   await linkControl({ ...parsed, created_by: user.id });
   await recomputeControlHealth(parsed.control_id);
@@ -115,7 +115,7 @@ export async function linkControlAction(formData: FormData) {
 export async function unlinkControlAction(formData: FormData) {
   const user = await requireUser();
   // Removing a control link is destructive — admin + compliance only.
-  if (!canDeleteOrArchive(user.role)) throw new Error("Only admin or compliance can remove links.");
+  if (!canDeleteOrArchive(user)) throw new Error("Only admin or compliance can remove links.");
   const linkId = Number(formData.get("link_id"));
   const controlId = Number(formData.get("control_id"));
   await unlinkControl(linkId);

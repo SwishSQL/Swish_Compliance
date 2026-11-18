@@ -6,8 +6,11 @@ import { z } from "zod";
 import {
   requireUser,
   canCreateSops,
-
+  can,
+  type AuthUser,
 } from "@/lib/auth/guard";
+import { getUserScope } from "@/lib/auth/access";
+import { departmentManagerIds, sopDepartmentIds } from "@/lib/auth/people";
 import { execute } from "@/lib/db";
 import {
   createSop,
@@ -18,15 +21,33 @@ import {
   setSopLink,
   getOpenRevision,
   createSopRevision,
+  setSopRoute,
+  recordSopApproval,
 } from "./repository";
 import {
   findTransition,
+  transitionBlocker,
   isSopLocked,
   canEditSopFields,
   canManageSop,
   nextSopVersion,
+  routeForAuthor,
+  firstReviewStage,
+  type SopActor,
   type SopStatus,
 } from "./types";
+
+/** The workflow actor: permissions + the departments the user is scoped to. */
+async function sopActor(user: AuthUser): Promise<SopActor> {
+  const scope = await getUserScope(user.id, user);
+  return { id: user.id, permissions: user.permissions, departmentIds: scope.departmentIds };
+}
+
+/** Who reviews at a stage that isn't a whole role (department validation). */
+async function stageReviewerIds(next: SopStatus, sopId: number): Promise<number[]> {
+  if (next !== "pending_dept_validation") return [];
+  return departmentManagerIds(await sopDepartmentIds(sopId));
+}
 import { notify } from "@/features/notifications/service";
 import {
   extractAttachment as extractAttachmentShared,
@@ -47,10 +68,32 @@ function planSopNotification(
   sopId: number,
   ownerId: number | null,
   actorName: string,
-  comment: string | null
+  comment: string | null,
+  stageUserIds: number[] = []
 ): SopNotifPlan | null {
   const ownerArr = ownerId ? [ownerId] : [];
   switch (next) {
+    case "pending_opex":
+      return {
+        audience: { roles: ["opex"] },
+        title: `New SOP awaiting OPEX review: "${sopTitle}"`,
+        body: `Submitted by ${actorName}. Open it to approve, return or reject.`,
+        severity: "info",
+      };
+    case "pending_dept_validation":
+      return {
+        audience: { userIds: stageUserIds },
+        title: `SOP awaiting your department validation: "${sopTitle}"`,
+        body: `${actorName} (OPEX) prepared this SOP for your department. Validate it or return it.`,
+        severity: "info",
+      };
+    case "rejected":
+      return {
+        audience: { userIds: ownerArr },
+        title: `Your SOP "${sopTitle}" was rejected`,
+        body: comment ? `Reason: "${comment}"` : "Open it to see the reason.",
+        severity: "warning",
+      };
     case "pending_compliance":
       return {
         audience: { roles: ["compliance"] },
@@ -229,8 +272,8 @@ async function extractAttachment(
  */
 export async function createSopAction(formData: FormData) {
   const user = await requireUser();
-  if (!canCreateSops(user.role)) {
-    throw new Error("Only Department Managers can create SOPs.");
+  if (!canCreateSops(user)) {
+    throw new Error("You are not allowed to create SOPs.");
   }
 
   const file = await extractAttachment(formData, "attachment_file");
@@ -272,6 +315,16 @@ export async function createSopAction(formData: FormData) {
     signatures_approval:    blankToNull(raw.signatures_approval),
   });
 
+  // A department manager may only create SOPs for their own department(s).
+  const departmentIds = selectedDepartmentIds(formData);
+  if (!can(user, "sop.create_any")) {
+    const scope = await getUserScope(user.id, user);
+    const wanted = [...departmentIds, ...(parsed.department_id ? [parsed.department_id] : [])];
+    if (isAllDepartments || wanted.length === 0 || wanted.some((d) => !scope.departmentIds.includes(d))) {
+      throw new Error("You can only create SOPs for your own department(s).");
+    }
+  }
+
   const id = await createSop({
     ...parsed,
     file_url: parsed.file_url || null,
@@ -280,12 +333,28 @@ export async function createSopAction(formData: FormData) {
     attachment_mime: file?.mime ?? null,
     brand_is_function: brandIsFunction,
     is_all_departments: isAllDepartments,
-    department_ids: selectedDepartmentIds(formData),
+    department_ids: departmentIds,
     created_by: user.id,
   });
 
-  // New SOPs are not drafts in v2 — they go straight into the Compliance queue.
-  await setSopStatus(id, "pending_compliance", null);
+  // New SOPs are submitted on creation, to the first review stage of their
+  // route (docs/RBAC.md §4): OPEX for DM / Compliance / IBE authors,
+  // department validation for OPEX authors.
+  const route = routeForAuthor(user);
+  const firstStage = firstReviewStage(route);
+  await setSopRoute(id, route);
+  await setSopStatus(id, firstStage, null);
+  await recordSopApproval({
+    sopId: id,
+    version: parsed.version ?? "1.0",
+    approverId: user.id,
+    approverName: user.displayName,
+    approverRole: user.role,
+    decision: "submit",
+    from: "draft",
+    to: firstStage,
+    comment: null,
+  });
 
   await execute(
     `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
@@ -304,34 +373,37 @@ export async function createSopAction(formData: FormData) {
   );
   await execute(
     `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
-     VALUES ($1, $2, 'sop:pending_compliance', 'sop', $3, $4)`,
+     VALUES ($1, $2, $3, 'sop', $4, $5)`,
     [
       user.id,
       user.email,
+      `sop:${firstStage}`,
       id,
       JSON.stringify({
         from: "draft",
-        to: "pending_compliance",
+        to: firstStage,
+        route,
         user_name: user.displayName,
         user_role: user.role,
       }),
     ]
   );
 
-  // Notify the Compliance team about the new SOP awaiting their review.
+  // Notify the first-stage reviewers.
   const plan = planSopNotification(
-    "pending_compliance",
+    firstStage,
     parsed.title,
     id,
     user.id,
     user.displayName,
-    null
+    null,
+    await stageReviewerIds(firstStage, id)
   );
   if (plan) {
     await notify({
       audience: plan.audience,
       actor: { id: user.id, name: user.displayName, role: user.role },
-      kind: "sop:pending_compliance",
+      kind: `sop:${firstStage}`,
       title: plan.title,
       body: plan.body,
       severity: plan.severity,
@@ -383,10 +455,8 @@ export async function updateSopAction(formData: FormData) {
   }
   const current = await getSopById(idRaw);
   if (!current) throw new Error("SOP not found.");
-  if (!canEditSopFields(user.role, current.status)) {
-    throw new Error(
-      `Your role (${user.role}) can't edit an SOP in status "${current.status}".`
-    );
+  if (!canEditSopFields(await sopActor(user), current)) {
+    throw new Error(`You can't edit this SOP while it is "${current.status}".`);
   }
 
   const file = await extractAttachment(formData, "attachment_file");
@@ -509,7 +579,7 @@ export async function updateSopAttachmentAction(formData: FormData) {
   if (!current) throw new Error("SOP not found.");
   // Admin / Compliance / OPEX / BE and the owning department manager may
   // attach or replace the file at any status (user spec 2026-11-08).
-  if (!canManageSop(user.role, user.id, current)) {
+  if (!canManageSop(await sopActor(user), current)) {
     throw new Error("You don't have permission to change this SOP's file.");
   }
   const afterApproval = isSopLocked(current.status);
@@ -543,7 +613,7 @@ export async function removeSopAttachmentAction(formData: FormData) {
   const id = Number(formData.get("id"));
   const current = await getSopById(id);
   if (!current) throw new Error("SOP not found.");
-  if (!canManageSop(user.role, user.id, current)) {
+  if (!canManageSop(await sopActor(user), current)) {
     throw new Error("You don't have permission to change this SOP's file.");
   }
   const afterApproval = isSopLocked(current.status);
@@ -588,20 +658,30 @@ export async function transitionSopAction(formData: FormData) {
     throw new Error("This SOP is locked. No further modifications are allowed.");
   }
 
-  const transition = findTransition(current.status, next);
+  const transition = findTransition(current, next);
   if (!transition) {
     throw new Error(
       `Transition from "${current.status}" to "${next}" is not allowed.`
     );
   }
-  if (!transition.allowedRoles.includes(user.role)) {
-    throw new Error(`Your role (${user.role}) can't perform this action.`);
-  }
+  const blocker = transitionBlocker(await sopActor(user), current, transition);
+  if (blocker) throw new Error(blocker);
   if (transition.commentRequired && !comment) {
     throw new Error("A comment is required for this action.");
   }
 
   await setSopStatus(id, next, next === "approved" ? user.id : null);
+  await recordSopApproval({
+    sopId: id,
+    version: current.version,
+    approverId: user.id,
+    approverName: user.displayName,
+    approverRole: user.role,
+    decision: transition.decision,
+    from: current.status,
+    to: next,
+    comment,
+  });
 
   // A revision replaces the version it revises once it is approved.
   if (next === "approved" && current.revision_of_id) {
@@ -653,7 +733,8 @@ export async function transitionSopAction(formData: FormData) {
     id,
     current.created_by ?? current.owner_id,
     user.displayName,
-    comment
+    comment,
+    await stageReviewerIds(next, id)
   );
   if (plan) {
     await notify({
@@ -717,7 +798,7 @@ export async function updateSopLinkAction(formData: FormData) {
   const { id, file_url } = parsed.data;
   const current = await getSopById(id);
   if (!current) throw new Error("SOP not found.");
-  if (!canManageSop(user.role, user.id, current)) {
+  if (!canManageSop(await sopActor(user), current)) {
     throw new Error("You don't have permission to change this SOP's link.");
   }
   const next = file_url === "" ? null : file_url;
@@ -756,7 +837,7 @@ export async function reviseSopAction(formData: FormData) {
   const current = await getSopById(id);
   if (!current) throw new Error("SOP not found.");
   if (current.status !== "approved") throw new Error("Only an approved SOP can get a new version.");
-  if (!canManageSop(user.role, user.id, current)) {
+  if (!canManageSop(await sopActor(user), current)) {
     throw new Error("You don't have permission to start a new version of this SOP.");
   }
 
@@ -764,7 +845,7 @@ export async function reviseSopAction(formData: FormData) {
   if (open) redirect(`/sops/${open.id}/edit`);
 
   const version = nextSopVersion(current.version);
-  const newId = await createSopRevision(id, version, user.id);
+  const newId = await createSopRevision(id, version, user.id, routeForAuthor(user));
   await execute(
     `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
      VALUES ($1, $2, 'sop:revision_started', 'sop', $3, $4)`,

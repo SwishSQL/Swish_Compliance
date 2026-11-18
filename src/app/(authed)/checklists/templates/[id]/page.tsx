@@ -32,12 +32,12 @@ export default async function ChecklistTemplateDetailPage({
     listLatestAnswersForTemplate(id),
   ]);
   const answerByItem = new Map(latestAnswers.map((a) => [a.item_id, a]));
-  const canEdit = canEditSops(user.role);
-  const canDelete = canDeleteOrArchive(user.role);
+  const canEdit = canEditSops(user);
+  const canDelete = canDeleteOrArchive(user);
   // Header edits (rename / category / deactivate=archive) and deleting a
   // question cascade into every audit that used this template, so they're
   // gated to admin + compliance. `isAdmin` here means "can edit header".
-  const isAdmin = canDeleteOrArchive(user.role);
+  const isAdmin = canDeleteOrArchive(user);
 
   const dbCategories = await listOptions("checklist_category", true);
   const categories =

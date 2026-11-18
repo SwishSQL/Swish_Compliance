@@ -90,11 +90,11 @@ export default async function ReportsPage() {
 
        (SELECT COUNT(*) FROM corrective_actions)                                     AS total_capas,
        (SELECT COUNT(*) FROM corrective_actions
-         WHERE status IN ('open','in_progress','submitted'))                         AS open_capas,
+         WHERE status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted'))                         AS open_capas,
        (SELECT COUNT(*) FROM corrective_actions WHERE status = 'closed')             AS closed_capas,
        (SELECT COUNT(*) FROM corrective_actions
          WHERE due_date < CAST(SYSUTCDATETIME() AS DATE)
-           AND status IN ('open','in_progress','submitted'))                         AS overdue_capas,
+           AND status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted'))                         AS overdue_capas,
        (SELECT COUNT(*) FROM corrective_actions
          WHERE created_at >= DATEADD(day, -7, SYSUTCDATETIME()))                     AS capas_this_week,
 
@@ -200,7 +200,7 @@ export default async function ReportsPage() {
     `SELECT TOP (8) c.id, c.name, c.code, c.health_status,
        (SELECT COUNT(*) FROM corrective_actions ca
         JOIN control_links cl ON cl.entity_type = 'capa' AND cl.entity_id = ca.id
-        WHERE cl.control_id = c.id AND ca.status IN ('open','in_progress','submitted'))
+        WHERE cl.control_id = c.id AND ca.status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted'))
        + ${openAuditFindingsSql("c.id")} AS open_capas
      FROM controls c
      WHERE c.is_active = 1 AND c.health_status IN ('failing','at_risk')

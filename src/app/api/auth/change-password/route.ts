@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getSession, changeOwnPassword } from "@/lib/auth/session";
+import { changeOwnPassword } from "@/lib/auth/session";
+import { getAuthUser } from "@/lib/auth/guard";
 import { execute } from "@/lib/db";
 
 const Body = z.object({
@@ -9,7 +10,7 @@ const Body = z.object({
 });
 
 export async function POST(req: Request) {
-  const user = await getSession();
+  const user = await getAuthUser();
   if (!user) {
     return NextResponse.json({ error: "Not signed in." }, { status: 401 });
   }

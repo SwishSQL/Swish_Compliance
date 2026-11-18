@@ -3,9 +3,19 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { requireUser, canApproveSops, canDeleteOrArchive } from "@/lib/auth/guard";
+import { requireUser, type AuthUser } from "@/lib/auth/guard";
+import { departmentManagerIds } from "@/lib/auth/people";
+import {
+  canWorkOnCapa,
+  canManagerReviewCapa,
+  canVerifyCloseCapa,
+  canAssignCapa,
+  submitTarget,
+  isCapaClosed,
+  type CapaActor,
+} from "./workflow";
 import { getUserScope } from "@/lib/auth/access";
-import { execute } from "@/lib/db";
+import { execute, queryAll } from "@/lib/db";
 import {
   createCapa,
   transitionCapa,
@@ -35,9 +45,43 @@ const CreateSchema = z.object({
   due_date: z.string().optional().nullable(),
 });
 
+/** The CAPA workflow actor: permissions + departments in scope. */
+async function capaActor(user: AuthUser): Promise<CapaActor> {
+  const scope = await getUserScope(user.id, user);
+  return { id: user.id, permissions: user.permissions, departmentIds: scope.departmentIds };
+}
+
+/**
+ * Assignment rule (docs/RBAC.md §7): Compliance / IBE assign anywhere; a
+ * department manager assigns CAPAs of their own department, to people in
+ * that department. Returns an error message, or null when allowed.
+ */
+async function assignBlocker(
+  user: AuthUser,
+  departmentIds: (number | null | undefined)[],
+  assigneeId: number | null | undefined
+): Promise<string | null> {
+  const actor = await capaActor(user);
+  if (departmentIds.some((d) => !canAssignCapa(actor, d ?? null))) {
+    return "Only Compliance, the IBE Manager, or the department's own manager can assign these CAPAs.";
+  }
+  if (!user.permissions.has("capa.assign_any") && assigneeId) {
+    const rows = await queryAll<{ id: number }>(
+      `SELECT u.id FROM users u
+       WHERE u.id = $1 AND u.is_active = 1
+         AND (u.department_id = ANY($2::int[])
+              OR EXISTS (SELECT 1 FROM user_departments ud
+                         WHERE ud.user_id = u.id AND ud.department_id = ANY($2::int[])))`,
+      [assigneeId, departmentIds.filter((d): d is number => d != null)]
+    );
+    if (rows.length === 0) return "A department manager can only assign CAPAs to members of that department.";
+  }
+  return null;
+}
+
 const TransitionSchema = z.object({
   id: z.coerce.number().int().positive(),
-  status: z.enum(["open", "in_progress", "submitted", "verified", "closed", "rejected"]),
+  status: z.enum(["pending_compliance_verification", "closed"]),
   resolution_note: z.string().optional().nullable(),
   evidence_url: z.string().optional().nullable(),
 });
@@ -53,6 +97,8 @@ export async function createCapaAction(formData: FormData) {
     assigned_to: raw.assigned_to === "" ? null : raw.assigned_to,
     due_date: raw.due_date === "" ? null : raw.due_date,
   });
+  const blocker = await assignBlocker(user, [parsed.department_id ?? null], parsed.assigned_to);
+  if (blocker) throw new Error(blocker);
   const id = await createCapa({ ...parsed, created_by: user.id });
   await execute(
     `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
@@ -133,13 +179,12 @@ export async function saveCapaExecutionAction(formData: FormData) {
 
   const capa = await getCapa(parsed.id);
   if (!capa) throw new Error("CAPA not found.");
-  const isOwner = capa.assigned_to === user.id;
-  const isAdmin = user.role === "admin";
-  if (!isOwner && !isAdmin) {
-    throw new Error("Only the CAPA owner (assignee) or an admin can save execution fields.");
-  }
-  if (capa.status === "closed" || capa.status === "verified") {
-    throw new Error("This CAPA is already closed — execution fields are locked.");
+  if (!canWorkOnCapa(await capaActor(user), capa)) {
+    throw new Error(
+      capa.assigned_to === user.id
+        ? "This CAPA is under review or closed — execution fields are locked."
+        : "Only the CAPA owner (assignee) can save execution fields."
+    );
   }
 
   await saveCapaExecution({
@@ -149,6 +194,10 @@ export async function saveCapaExecutionAction(formData: FormData) {
     preventive_action_taken: parsed.preventive_action_taken ?? null,
     completion_note: parsed.completion_note ?? null,
   });
+  // Saving progress means work has started.
+  if (capa.status !== "in_progress") {
+    await transitionCapa(parsed.id, "in_progress", {});
+  }
 
   await execute(
     `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
@@ -174,12 +223,8 @@ export async function addCapaEvidenceAction(formData: FormData) {
   if (!Number.isFinite(capaId) || capaId <= 0) throw new Error("Invalid CAPA id.");
   const capa = await getCapa(capaId);
   if (!capa) throw new Error("CAPA not found.");
-  const isOwner = capa.assigned_to === user.id;
-  if (!isOwner && user.role !== "admin") {
-    throw new Error("Only the CAPA owner (assignee) or an admin can upload CAPA evidence.");
-  }
-  if (capa.status === "closed" || capa.status === "verified") {
-    throw new Error("This CAPA is closed — evidence uploads are locked.");
+  if (!canWorkOnCapa(await capaActor(user), capa)) {
+    throw new Error("Only the CAPA owner can upload evidence, and only while the CAPA is with them.");
   }
 
   const files = await extractAttachments(formData, "files");
@@ -219,12 +264,10 @@ export async function deleteCapaEvidenceAction(formData: FormData) {
   }
   const capa = await getCapa(capaId);
   if (!capa) throw new Error("CAPA not found.");
-  const isOwner = capa.assigned_to === user.id;
-  if (!isOwner && !canDeleteOrArchive(user.role)) {
-    throw new Error("Only the CAPA owner (assignee), compliance, or an admin can remove CAPA evidence.");
-  }
-  if (capa.status === "closed" || capa.status === "verified") {
-    throw new Error("This CAPA is closed — evidence is locked.");
+  // Submitted evidence is a compliance record: only the owner may remove
+  // their own upload, and only while the CAPA is still with them.
+  if (!canWorkOnCapa(await capaActor(user), capa)) {
+    throw new Error("Evidence can only be removed by the CAPA owner while the CAPA is with them.");
   }
   await deleteCapaEvidence(evidenceId);
   revalidatePath(`/capa/${capaId}`);
@@ -243,12 +286,12 @@ export async function submitCapaForReviewAction(formData: FormData) {
   if (!Number.isFinite(capaId) || capaId <= 0) throw new Error("Invalid CAPA id.");
   const capa = await getCapa(capaId);
   if (!capa) throw new Error("CAPA not found.");
-  const isOwner = capa.assigned_to === user.id;
-  if (!isOwner && user.role !== "admin") {
-    throw new Error("Only the CAPA owner (assignee) can submit for review.");
-  }
-  if (capa.status === "closed" || capa.status === "verified" || capa.status === "submitted") {
-    throw new Error(`CAPA is already ${capa.status} — it can't be resubmitted.`);
+  if (!canWorkOnCapa(await capaActor(user), capa)) {
+    throw new Error(
+      capa.assigned_to === user.id
+        ? `CAPA is already ${capa.status} — it can't be resubmitted.`
+        : "Only the CAPA owner (assignee) can submit for review."
+    );
   }
 
   const missing: string[] = EXECUTION_REQUIRED_FIELDS.filter(
@@ -264,14 +307,18 @@ export async function submitCapaForReviewAction(formData: FormData) {
     );
   }
 
-  // Clear any previous rejection so it doesn't linger in the UI.
+  // Department manager reviews first (when there is one who isn't the
+  // assignee), then Compliance verifies.
+  const managers = await departmentManagerIds(capa.department_id ? [capa.department_id] : []);
+  const target = submitTarget(managers, capa.assigned_to);
+  // Clear any previous return reason so it doesn't linger in the UI.
   await execute(
     `UPDATE corrective_actions
-       SET status = 'submitted',
+       SET status = $2,
            submitted_at = SYSUTCDATETIME(),
            rejection_reason = NULL
      WHERE id = $1`,
-    [capaId]
+    [capaId, target]
   );
 
   await execute(
@@ -282,22 +329,26 @@ export async function submitCapaForReviewAction(formData: FormData) {
       user.email,
       capaId,
       JSON.stringify({
+        from: capa.status,
+        to: target,
         by_user_name: user.displayName,
         by_user_role: user.role,
       }),
     ]
   );
 
-  // Notify reviewer + creator + compliance role (any of them can verify).
-  const targets: number[] = [];
-  if (capa.reviewer_id) targets.push(capa.reviewer_id);
-  if (capa.created_by && !targets.includes(capa.created_by)) targets.push(capa.created_by);
   await notify({
-    audience: { userIds: targets, roles: ["compliance", "business_excellence", "admin"] },
+    audience:
+      target === "pending_manager_review"
+        ? { userIds: managers }
+        : { userIds: capa.reviewer_id ? [capa.reviewer_id] : [], roles: ["compliance"] },
     actor: { id: user.id, name: user.displayName, role: user.role },
     kind: "capa:submitted_for_review",
-    title: `CAPA "${capa.title}" submitted for verification`,
-    body: `${user.displayName} completed the corrective action. Please review the CAPA evidence and verify or reject.`,
+    title:
+      target === "pending_manager_review"
+        ? `CAPA "${capa.title}" submitted — awaiting your review`
+        : `CAPA "${capa.title}" submitted for verification`,
+    body: `${user.displayName} completed the corrective action. Review the evidence and forward, close or return it.`,
     severity: "info",
     entity: { type: "capa", id: capaId, href: `/capa/${capaId}` },
   });
@@ -323,25 +374,18 @@ export async function rejectCapaAction(formData: FormData) {
 
   const capa = await getCapa(capaId);
   if (!capa) throw new Error("CAPA not found.");
-  if (capa.assigned_to === user.id) {
-    throw new Error("The CAPA assignee can't reject their own submission.");
-  }
-  const isReviewer =
-    user.role === "admin" ||
-    user.role === "compliance" ||
-    user.role === "business_excellence" ||
-    capa.reviewer_id === user.id ||
-    capa.created_by === user.id;
-  if (!isReviewer) {
-    throw new Error("Only Compliance, BE, admin, the assigned reviewer, or the CAPA creator can reject.");
-  }
-  if (capa.status !== "submitted") {
-    throw new Error("Only a submitted CAPA can be rejected.");
+  // Return for correction: the department manager (at manager review) or
+  // Compliance (at verification). Never the assignee.
+  const actor = await capaActor(user);
+  if (!canManagerReviewCapa(actor, capa) && !canVerifyCloseCapa(actor, capa)) {
+    throw new Error(
+      "Only the department manager (at manager review) or Compliance (at verification) can return this CAPA."
+    );
   }
 
   await execute(
     `UPDATE corrective_actions
-       SET status = 'rejected',
+       SET status = 'returned',
            rejection_reason = $2,
            submitted_at = NULL
      WHERE id = $1`,
@@ -350,12 +394,12 @@ export async function rejectCapaAction(formData: FormData) {
 
   await execute(
     `INSERT INTO audit_logs (user_id, user_email, action, entity, entity_id, details)
-     VALUES ($1, $2, 'capa:rejected', 'capa', $3, $4)`,
+     VALUES ($1, $2, 'capa:returned', 'capa', $3, $4)`,
     [
       user.id,
       user.email,
       capaId,
-      JSON.stringify({ reason, by_user_name: user.displayName }),
+      JSON.stringify({ from: capa.status, to: "returned", reason, by_user_name: user.displayName, by_user_role: user.role }),
     ]
   );
 
@@ -363,8 +407,8 @@ export async function rejectCapaAction(formData: FormData) {
     await notify({
       audience: { userIds: [capa.assigned_to] },
       actor: { id: user.id, name: user.displayName, role: user.role },
-      kind: "capa:rejected",
-      title: `CAPA "${capa.title}" was returned — please revise`,
+      kind: "capa:returned",
+      title: `CAPA "${capa.title}" was returned for correction`,
       body: `Reason: "${reason}"`,
       severity: "warning",
       entity: { type: "capa", id: capaId, href: `/capa/${capaId}` },
@@ -425,26 +469,10 @@ export async function assignCapaFromFindingAction(
       raw.assignment_note === "" ? null : raw.assignment_note,
   });
 
-  const isReviewerRole =
-    user.role === "admin" ||
-    user.role === "compliance" ||
-    user.role === "business_excellence";
-
-  let isAllowed = isReviewerRole;
-  if (!isAllowed && user.role === "department_manager") {
-    const auditScope = await getAuditScope(parsed.audit_id);
-    const scope = await getUserScope(user.id, user.role);
-    isAllowed =
-      !!auditScope?.department_id &&
-      scope.departmentIds.includes(auditScope.department_id);
-  }
-  if (!isAllowed) {
-    return {
-      ok: false,
-      error:
-        "Only Compliance, Business Excellence, admin, or the department's own manager can assign CAPAs.",
-    };
-  }
+  // Department is taken from the audit, never from the client.
+  const auditScope = await getAuditScope(parsed.audit_id);
+  const blocker = await assignBlocker(user, [auditScope?.department_id ?? null], parsed.assigned_to);
+  if (blocker) return { ok: false, error: blocker };
 
   const { id, code, created } = await upsertCapaFromFinding({
     audit_id: parsed.audit_id,
@@ -561,25 +589,8 @@ export async function assignControlCapasAction(
 
   const auditScope = await getAuditScope(parsed.audit_id);
 
-  const isReviewerRole =
-    user.role === "admin" ||
-    user.role === "compliance" ||
-    user.role === "business_excellence";
-
-  let isAllowed = isReviewerRole;
-  if (!isAllowed && user.role === "department_manager") {
-    const userScope = await getUserScope(user.id, user.role);
-    isAllowed =
-      !!auditScope?.department_id &&
-      userScope.departmentIds.includes(auditScope.department_id);
-  }
-  if (!isAllowed) {
-    return {
-      ok: false,
-      error:
-        "Only Compliance, Business Excellence, admin, or the department's own manager can assign CAPAs.",
-    };
-  }
+  const blocker = await assignBlocker(user, [auditScope?.department_id ?? null], parsed.assigned_to);
+  if (blocker) return { ok: false, error: blocker };
 
   const findings = await listBulkAssignableFindings(
     parsed.audit_id,
@@ -731,26 +742,12 @@ export async function assignBulkCapasAction(
   const auditIds = items.map((i) => i.audit_id);
   const scopesByAudit = await getAuditScopesMap(auditIds);
 
-  const isReviewerRole =
-    user.role === "admin" ||
-    user.role === "compliance" ||
-    user.role === "business_excellence";
-
-  let isAllowed = isReviewerRole;
-  if (!isAllowed && user.role === "department_manager") {
-    const userScope = await getUserScope(user.id, user.role);
-    isAllowed = items.every((i) => {
-      const deptId = scopesByAudit.get(i.audit_id)?.department_id;
-      return !!deptId && userScope.departmentIds.includes(deptId);
-    });
-  }
-  if (!isAllowed) {
-    return {
-      ok: false,
-      error:
-        "Only Compliance, Business Excellence, admin, or the department's own manager can assign CAPAs — and a department manager can only assign findings inside their own department.",
-    };
-  }
+  const blocker = await assignBlocker(
+    user,
+    items.map((i) => scopesByAudit.get(i.audit_id)?.department_id ?? null),
+    parsed.assigned_to
+  );
+  if (blocker) return { ok: false, error: blocker };
 
   const capas: { id: number; code: string }[] = [];
   for (const item of items) {
@@ -849,19 +846,9 @@ export async function assignCapaAction(formData: FormData) {
   const before = await getCapa(parsed.id);
   if (!before) throw new Error("CAPA not found.");
 
-  const isCreator = before.created_by === user.id;
-  const isPrevAssignee = before.assigned_to === user.id;
-  const isAllowed =
-    user.role === "admin" ||
-    user.role === "compliance" ||
-    user.role === "business_excellence" ||
-    isCreator ||
-    isPrevAssignee;
-  if (!isAllowed) {
-    throw new Error(
-      "Only the CAPA creator, compliance, business excellence, admin, or the current assignee can change the assignment."
-    );
-  }
+  if (isCapaClosed(before.status)) throw new Error("This CAPA is closed — the assignment is final.");
+  const blocker = await assignBlocker(user, [before.department_id], parsed.assigned_to);
+  if (blocker) throw new Error(blocker);
 
   await setCapaAssignee(parsed.id, parsed.assigned_to ?? null);
   await execute(
@@ -908,44 +895,21 @@ export async function transitionCapaAction(formData: FormData) {
   const before = await getCapa(parsed.id);
   if (!before) throw new Error("CAPA not found.");
 
-  // Permission rules
-  // ───────────────────────────────────────────────────────────────
-  // Segregation of duties (per user spec):
-  //   verify / close / reject CANNOT be performed by the assignee
-  //   (the person who actually did the work). Those decisions
-  //   belong to compliance, the CAPA creator (auditor), business
-  //   excellence, or admin.
-  // ───────────────────────────────────────────────────────────────
-  const next: CapaStatus = parsed.status;
-  const isAssignee = before.assigned_to === user.id;
-  const isCreator = before.created_by === user.id;
-  const isCompliance = user.role === "compliance";
-  const isAdminOrBE = canApproveSops(user.role); // admin OR business_excellence
-
-  if (next === "verified" || next === "closed" || next === "rejected") {
-    if (isAssignee) {
-      throw new Error(
-        "The CAPA assignee can't verify, close, or reject their own work. " +
-          "Ask the CAPA creator, compliance, or an admin."
-      );
-    }
-    const isAllowedReviewer = isAdminOrBE || isCompliance || isCreator;
-    if (!isAllowedReviewer) {
-      throw new Error(
-        "Only Compliance, the CAPA creator, Business Excellence, or admin can verify/close/reject CAPAs."
-      );
-    }
+  // Manager forwards to Compliance; Compliance verifies and closes.
+  // (Returns go through rejectCapaAction.) Never the assignee.
+  const next = parsed.status;
+  const actor = await capaActor(user);
+  if (next === "pending_compliance_verification" && !canManagerReviewCapa(actor, before)) {
+    throw new Error("Only the department manager can forward this CAPA, and only while it awaits manager review.");
   }
-  if (next === "submitted" || next === "in_progress") {
-    if (!isAssignee && !isAdminOrBE && !isCompliance) {
-      throw new Error("Only the assignee or compliance team can update this CAPA.");
-    }
+  if (next === "closed" && !canVerifyCloseCapa(actor, before)) {
+    throw new Error("Only Compliance can verify and close this CAPA, and only once it awaits verification.");
   }
 
   await transitionCapa(parsed.id, next, {
     resolution_note: parsed.resolution_note ?? null,
     evidence_url: parsed.evidence_url ?? null,
-    verified_by: (next === "verified" || next === "closed") ? user.id : null,
+    verified_by: next === "closed" ? user.id : null,
   });
 
   await execute(
@@ -956,7 +920,13 @@ export async function transitionCapaAction(formData: FormData) {
       user.email,
       `capa:${next}`,
       parsed.id,
-      JSON.stringify({ from: before.status, to: next }),
+      JSON.stringify({
+        from: before.status,
+        to: next,
+        note: parsed.resolution_note ?? null,
+        by_user_name: user.displayName,
+        by_user_role: user.role,
+      }),
     ]
   );
 
@@ -967,30 +937,15 @@ export async function transitionCapaAction(formData: FormData) {
     string,
     { audience: { userIds?: number[]; roles?: string[] }; title: string; severity: "info" | "success" | "warning" | "critical" }
   > = {
-    submitted: {
-      audience: { roles: ["business_excellence", "admin"], userIds: creator },
-      title: `CAPA "${before.title}" submitted for verification`,
+    pending_compliance_verification: {
+      audience: { roles: ["compliance"], userIds: [...assignee, ...(before.reviewer_id ? [before.reviewer_id] : [])] },
+      title: `CAPA "${before.title}" reviewed by the department manager — awaiting Compliance verification`,
       severity: "info",
-    },
-    verified: {
-      audience: { userIds: [...assignee, ...creator] },
-      title: `CAPA "${before.title}" was verified ✅`,
-      severity: "success",
     },
     closed: {
-      audience: { userIds: [...assignee, ...creator], roles: ["admin"] },
-      title: `CAPA "${before.title}" was closed`,
+      audience: { userIds: [...assignee, ...creator] },
+      title: `CAPA "${before.title}" was verified and formally closed ✅`,
       severity: "success",
-    },
-    rejected: {
-      audience: { userIds: assignee },
-      title: `CAPA "${before.title}" was rejected — please revise`,
-      severity: "warning",
-    },
-    in_progress: {
-      audience: { userIds: creator },
-      title: `Work started on CAPA "${before.title}"`,
-      severity: "info",
     },
   };
   const plan = plans[next];

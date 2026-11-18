@@ -36,7 +36,7 @@ export default async function ControlDetailPage({
   if (!ctrl) notFound();
   const links = await listControlLinks(id);
   const controlRates = (await listControlRates(id)).get(id);
-  const canEdit = canEditSops(user.role) || user.role === "compliance";
+  const canEdit = canEditSops(user);
 
   // Full lineage for the header — the domain comes via the framework.
   const lineage = ctrl.framework_id
@@ -165,7 +165,7 @@ export default async function ControlDetailPage({
             <h2 className="text-lg font-bold text-gray-900 mb-1">{ctrl.name}</h2>
             {ctrl.description && <p className="text-xs text-gray-600 max-w-3xl">{ctrl.description}</p>}
           </div>
-          {canDeleteOrArchive(user.role) && (
+          {canDeleteOrArchive(user) && (
             <DeleteEntityButton entityType="control" entityId={ctrl.id} label="Control" />
           )}
         </div>

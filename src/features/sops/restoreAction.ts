@@ -5,7 +5,7 @@ import { requireUser } from "@/lib/auth/guard";
 import { execute, queryOne } from "@/lib/db";
 
 /**
- * Bring an archived SOP back to Approved (admin only). The original
+ * Bring an archived SOP back to Approved (whoever may archive — sop.archive). The original
  * approver and approval date are kept — this undoes the archive, it is not
  * a new approval, so no approval/acknowledgement notifications are sent.
  * Refused while another approved version of the same SOP is live, so two
@@ -13,7 +13,8 @@ import { execute, queryOne } from "@/lib/db";
  */
 export async function restoreSopAction(formData: FormData) {
   const user = await requireUser();
-  if (user.role !== "admin") throw new Error("Only an admin can restore an archived SOP.");
+  // Same authority as archiving (docs/RBAC.md): Compliance by default.
+  if (!user.permissions.has("sop.archive")) throw new Error("You are not allowed to restore an archived SOP.");
   const id = Number(formData.get("id"));
   if (!Number.isInteger(id) || id <= 0) throw new Error("Invalid SOP.");
 

@@ -101,7 +101,7 @@ export default async function MyWorkPage() {
        -- $4 the dept id so the predicate stays a pure WHERE on the same
        -- aggregate query.
        (SELECT COUNT(*) FROM corrective_actions
-        WHERE status IN ('open','in_progress')
+        WHERE status IN ('open','assigned','in_progress','returned','rejected')
           AND (
             $3 IN ('admin','compliance','business_excellence')
             OR ($3 = 'department_manager' AND department_id = $4)
@@ -110,7 +110,7 @@ export default async function MyWorkPage() {
           ))                                                                                AS my_capas_open,
        (SELECT COUNT(*) FROM corrective_actions
         WHERE due_date < CAST(SYSUTCDATETIME() AS DATE)
-          AND status IN ('open','in_progress','submitted')
+          AND status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted')
           AND (
             $3 IN ('admin','compliance','business_excellence')
             OR ($3 = 'department_manager' AND department_id = $4)
@@ -139,7 +139,7 @@ export default async function MyWorkPage() {
       // department; everyone else still sees "assigned to me".
       `SELECT TOP (6) id, code, title, status, due_date, severity
        FROM corrective_actions
-       WHERE status IN ('open','in_progress','submitted')
+       WHERE status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted')
          AND (
            $2 IN ('admin','compliance','business_excellence')
            OR ($2 = 'department_manager' AND department_id = $3)

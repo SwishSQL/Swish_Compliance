@@ -49,7 +49,7 @@ export default async function DomainDetailPage({
 
   // Link buttons (editors only). A domain names at most one SOP, so the SOP
   // picker only shows while it has none.
-  const canLink = canEditSops(user.role);
+  const canLink = canEditSops(user);
   const hasDirectSop = sops.some((s) => s.direct === 1);
   type SopOpt = { id: number; code: string | null; title: string };
   type FwOpt = { id: number; name: string; domain_name: string | null };
@@ -111,7 +111,7 @@ export default async function DomainDetailPage({
             >
               ← All domains
             </Link>
-            {canDeleteOrArchive(user.role) && (
+            {canDeleteOrArchive(user) && (
               <DeleteEntityButton entityType="domain" entityId={domain.id} label="Domain" />
             )}
           </div>

@@ -53,6 +53,9 @@ export const sectionLabel = (key: string) =>
   FEEDBACK_SECTIONS.find((s) => s.key === key)?.label ?? key;
 
 /** Who can respond to / close review feedback. */
-export function canTriageSopFeedback(role: string): boolean {
-  return ["admin", "compliance", "opex", "business_excellence"].includes(role);
+export function canTriageSopFeedback(user: { permissions: ReadonlySet<string> }): boolean {
+  // SOP reviewers / editors (docs/RBAC.md).
+  return ["sop.edit_any_draft", "sop.review_opex", "sop.review_compliance", "sop.review_ibe"].some(
+    (p) => user.permissions.has(p)
+  );
 }

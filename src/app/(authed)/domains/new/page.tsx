@@ -7,7 +7,7 @@ import { createDomainAction } from "@/features/domains/actions";
 
 export default async function NewDomainPage() {
   const user = await requireUser();
-  if (!canEditSops(user.role)) redirect("/domains");
+  if (!canEditSops(user)) redirect("/domains");
 
   const [sops, departments] = await Promise.all([
     queryAll<{ id: number; code: string | null; title: string }>(

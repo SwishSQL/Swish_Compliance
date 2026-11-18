@@ -256,7 +256,7 @@ export default async function AuditDetailPage({
           </div>
 
           <div className="flex flex-col items-end gap-3 shrink-0">
-            {canDeleteOrArchive(user.role) && (
+            {canDeleteOrArchive(user) && (
               <DeleteEntityButton entityType="audit" entityId={audit.id} label="Audit" />
             )}
             {audit.score !== null && (
