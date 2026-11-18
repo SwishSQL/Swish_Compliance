@@ -1,4 +1,4 @@
-import { requireUser } from "@/lib/auth/guard";
+import { requirePermission } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { queryAll } from "@/lib/db";
 import { getUserScope, getScopedIds } from "@/lib/auth/access";
@@ -18,7 +18,8 @@ export default async function NewAuditPage({
 }: {
   searchParams: Promise<{ error?: string; framework?: string }>;
 }) {
-  const user = await requireUser();
+  // Only Compliance / IBE create and assign audits (docs/RBAC.md §6).
+  const user = await requirePermission("audit.create");
   const sp = await searchParams;
   const frameworkParam = sp.framework && /^\d+$/.test(sp.framework) ? sp.framework : null;
   const controlsHref = frameworkParam ? `/controls?framework=${frameworkParam}` : "/controls";

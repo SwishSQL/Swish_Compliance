@@ -1,3 +1,4 @@
+import { getUserScope } from "@/lib/auth/access";
 import Link from "next/link";
 import { requireUser } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
@@ -18,14 +19,16 @@ export default async function AuditsPage({
   // Compliance / BE / admin have full visibility over every audit so
   // they can monitor the whole register. Everyone else still sees only
   // audits they created or are assigned to.
-  const fullVisibility =
-    user.role === "admin" ||
-    user.role === "compliance" ||
-    user.role === "business_excellence";
+  // docs/RBAC.md §8: organisation-wide users see every audit; department
+  // managers also see their departments' audits; everyone else sees the
+  // audits they created, perform, or are the auditee / reviewer of.
+  const scope = await getUserScope(user.id, user);
   const audits = await listAudits({
     search: sp.search,
     status: sp.status,
-    scopedToUserId: fullVisibility ? undefined : user.id,
+    scopedToUserId: scope.full ? undefined : user.id,
+    scopedDepartmentIds:
+      !scope.full && user.permissions.has("capa.monitor") ? scope.departmentIds : undefined,
   });
 
   return (
@@ -58,12 +61,14 @@ export default async function AuditsPage({
             Filter
           </button>
         </form>
-        <Link
-          href="/audits/new"
-          className="bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"
-        >
-          + New Audit
-        </Link>
+        {user.permissions.has("audit.create") && (
+          <Link
+            href="/audits/new"
+            className="bg-brand-700 hover:bg-brand-800 text-white px-4 py-2 rounded-lg text-sm font-medium"
+          >
+            + New Audit
+          </Link>
+        )}
       </div>
 
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
