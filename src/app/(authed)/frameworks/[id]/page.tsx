@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser, canAccessAdmin, canDeleteOrArchive, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canAccessAdmin, canDeleteOrArchive, canEditSops } from "@/lib/auth/guard";
 import {
   linkControlToFrameworkAction,
   linkFrameworkToDomainAction,
@@ -22,7 +22,7 @@ export default async function FrameworkDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const { id: idStr } = await params;
   const id = Number(idStr);
   const fw = await getFramework(id);

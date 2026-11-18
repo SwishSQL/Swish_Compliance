@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { listTemplates } from "@/features/checklists/repository";
 import FilterBar, { STATUS_OPTIONS } from "@/features/filters/FilterBar";
@@ -20,7 +20,7 @@ export default async function ChecklistTemplatesPage({
 }: {
   searchParams: Promise<Search>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const sp = await searchParams;
   const [all, lin] = await Promise.all([listTemplates(sp.search), loadLineage()]);
 

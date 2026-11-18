@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser } from "@/lib/auth/guard";
+import { requirePermission } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import EmptyState from "@/features/shell/EmptyState";
 import { queryAll, queryOne } from "@/lib/db";
@@ -63,7 +63,7 @@ type ChecklistUsage = {
 };
 
 export default async function ReportsPage() {
-  const user = await requireUser();
+  const user = await requirePermission("records.view_all");
 
   /* ── Headline counts ──────────────────────────────────────────── */
   const overview = await queryOne<Overview>(

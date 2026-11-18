@@ -25,7 +25,7 @@ export type AuthUser = SessionUser & {
   /** Every role the user holds (user_roles), primary role included. */
   roles: string[];
   /** Effective permissions: union of the roles' defaults + admin overrides. */
-  permissions: ReadonlySet<Permission>;
+  permissions: ReadonlySet<string>;
 };
 
 const loadAuthUser = cache(async (id: number): Promise<AuthUser | null> => {

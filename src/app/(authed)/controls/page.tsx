@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { listControls, listControlRates } from "@/features/controls/repository";
 import ControlRatesBadges from "@/features/controls/ControlRatesBadges";
@@ -18,7 +18,7 @@ export default async function ControlsPage({
 }: {
   searchParams: Promise<{ search?: string; health?: ControlHealth; framework?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const sp = await searchParams;
   const allControls = await listControls({
     search: sp.search,

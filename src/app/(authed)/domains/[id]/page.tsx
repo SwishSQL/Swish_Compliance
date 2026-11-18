@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser, canDeleteOrArchive, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canDeleteOrArchive, canEditSops } from "@/lib/auth/guard";
 import { linkDomainToSopAction, unlinkDomainFromSopAction } from "@/features/sops/linkActions";
 import {
   linkFrameworkToDomainAction,
@@ -19,7 +19,7 @@ export default async function DomainDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const { id: idStr } = await params;
   const id = Number(idStr);
   const domain = await getDomain(id);

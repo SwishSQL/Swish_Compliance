@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser, canEditSops, canDeleteOrArchive } from "@/lib/auth/guard";
+import { requirePermission, canEditSops, canDeleteOrArchive } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import {
   listDomains,
@@ -14,7 +14,7 @@ import { domainMatches, idParam, loadLineage } from "@/features/filters/lineage"
 type Search = { search?: string; status?: string; department?: string; brand?: string };
 
 export default async function DomainsPage({ searchParams }: { searchParams: Promise<Search> }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const sp = await searchParams;
   const [allDomains, frameworksByDomain, sopsByDomain, lin] = await Promise.all([
     listDomains(true),

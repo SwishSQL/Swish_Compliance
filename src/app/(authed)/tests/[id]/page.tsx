@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canEditSops } from "@/lib/auth/guard";
 import { linkChecklistToTestAction } from "@/features/links/actions";
 import Workspace from "@/features/shell/Workspace";
 import {
@@ -22,7 +22,7 @@ export default async function CheckDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const { id: idStr } = await params;
   const id = Number(idStr);
   const check = await getCheck(id);

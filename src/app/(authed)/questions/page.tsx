@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser } from "@/lib/auth/guard";
+import { requirePermission } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { listAllQuestions } from "@/features/checklists/repository";
 import { queryAll } from "@/lib/db";
@@ -27,7 +27,7 @@ export default async function QuestionsPage({
     brand?: string;
   }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const sp = await searchParams;
   const checklistFilter = sp.checklist ? Number(sp.checklist) : undefined;
 

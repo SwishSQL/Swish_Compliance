@@ -1,3 +1,5 @@
+import { getUserScope } from "@/lib/auth/access";
+import { SOP_STAGE_PERMISSION } from "@/features/sops/types";
 import Link from "next/link";
 import { requireUser } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
@@ -81,20 +83,30 @@ export default async function MyWorkPage() {
   );
   const myDeptId = me?.department_id ?? null;
 
-  // SOP status the user can act on right now (based on their role).
-  const pendingStatusForRole: Record<string, string> = {
-    compliance: "pending_compliance",
-    business_excellence: "pending_business_excellence",
-    ceo: "pending_ceo",
-    department_manager: "returned_to_dm",
-  };
-  const pendingStatus = pendingStatusForRole[user.role] ?? null;
+  // SOP stages the user reviews (docs/RBAC.md §4), from their permissions.
+  // Department validation only counts SOPs of the user's own departments.
+  const scope = await getUserScope(user.id, user);
+  const myDeptIds = scope.departmentIds.length > 0 ? scope.departmentIds : [-1];
+  const reviewStatuses = (Object.entries(SOP_STAGE_PERMISSION) as [string, string][])
+    .filter(([status, perm]) => status !== "pending_dept_validation" && user.permissions.has(perm))
+    .map(([status]) => status);
+  const validatesDept = user.permissions.has("sop.validate_dept");
+  const pendingStatus =
+    reviewStatuses[0] ?? (validatesDept ? "pending_dept_validation" : null);
+  // CAPA scope: organisation-wide, own departments (managers), or own.
+  const capaMode = scope.full ? "all" : user.permissions.has("capa.monitor") ? "dept" : "mine";
 
   /* ── Single aggregated counts query ─────────────────────────── */
   const counts = await queryOne<CountRow>(
     `SELECT
-       (SELECT COUNT(*) FROM sops
-        WHERE status = COALESCE($2, ''))                                                   AS pending_sops_for_me,
+       (SELECT COUNT(*) FROM sops s
+        WHERE s.status = ANY($2::text[])
+           OR ($5 = 1 AND s.status = 'pending_dept_validation'
+               AND (s.is_all_departments = 1
+                    OR s.department_id = ANY($4::int[])
+                    OR EXISTS (SELECT 1 FROM sop_departments sd
+                               WHERE sd.sop_id = s.id AND sd.department_id = ANY($4::int[])))))
+                                                                                            AS pending_sops_for_me,
        -- CAPA counts widen for the privileged roles (compliance / BE /
        -- admin see everything; DM sees their own department; everyone
        -- else still scopes to "assigned to me"). $3 carries the role,
@@ -103,19 +115,17 @@ export default async function MyWorkPage() {
        (SELECT COUNT(*) FROM corrective_actions
         WHERE status IN ('open','assigned','in_progress','returned','rejected')
           AND (
-            $3 IN ('admin','compliance','business_excellence')
-            OR ($3 = 'department_manager' AND department_id = $4)
-            OR ($3 NOT IN ('admin','compliance','business_excellence','department_manager')
-                AND assigned_to = $1)
+            $3 = 'all'
+            OR ($3 = 'dept' AND (department_id = ANY($4::int[]) OR assigned_to = $1))
+            OR assigned_to = $1
           ))                                                                                AS my_capas_open,
        (SELECT COUNT(*) FROM corrective_actions
         WHERE due_date < CAST(SYSUTCDATETIME() AS DATE)
           AND status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted')
           AND (
-            $3 IN ('admin','compliance','business_excellence')
-            OR ($3 = 'department_manager' AND department_id = $4)
-            OR ($3 NOT IN ('admin','compliance','business_excellence','department_manager')
-                AND assigned_to = $1)
+            $3 = 'all'
+            OR ($3 = 'dept' AND (department_id = ANY($4::int[]) OR assigned_to = $1))
+            OR assigned_to = $1
           ))                                                                                AS my_capas_overdue,
        -- Both creator AND assignee count as "mine" (matches the audit
        -- visibility gate we shipped — anyone who can edit shows up here).
@@ -128,7 +138,7 @@ export default async function MyWorkPage() {
           AND status IN ('draft','returned_to_dm','returned_to_compliance','returned_to_be')) AS sops_owned_draft,
        (SELECT COUNT(*) FROM audits
         WHERE CAST(submitted_at AS DATE) = CAST(SYSUTCDATETIME() AS DATE) AND critical_failed > 0)                   AS failed_critical_today`,
-    [user.id, pendingStatus, user.role, myDeptId ?? -1]
+    [user.id, reviewStatuses.length > 0 ? reviewStatuses : ["__none__"], capaMode, myDeptIds, validatesDept ? 1 : 0]
   );
 
   /* ── Lists ──────────────────────────────────────────────────── */
@@ -141,13 +151,12 @@ export default async function MyWorkPage() {
        FROM corrective_actions
        WHERE status IN ('open','assigned','in_progress','pending_manager_review','pending_compliance_verification','returned','submitted')
          AND (
-           $2 IN ('admin','compliance','business_excellence')
-           OR ($2 = 'department_manager' AND department_id = $3)
-           OR ($2 NOT IN ('admin','compliance','business_excellence','department_manager')
-               AND assigned_to = $1)
+           $2 = 'all'
+           OR ($2 = 'dept' AND (department_id = ANY($3::int[]) OR assigned_to = $1))
+           OR assigned_to = $1
          )
        ORDER BY CASE WHEN due_date IS NULL THEN 1 ELSE 0 END, due_date, id DESC`,
-      [user.id, user.role, myDeptId ?? -1]
+      [user.id, capaMode, myDeptIds]
     ),
     queryAll<AuditItem>(
       // LEFT JOIN templates: template_id is NULL in the new tests-first
@@ -288,11 +297,11 @@ export default async function MyWorkPage() {
           <StatCard
             icon="📝"
             label={
-              user.role === "department_manager"
-                ? "SOPs returned to me"
-                : user.role === "ceo"
-                  ? "SOPs awaiting CEO"
-                  : "SOPs awaiting review"
+              user.permissions.has("sop.review_ceo")
+                ? "SOPs awaiting CEO"
+                : reviewStatuses.length === 0
+                  ? "SOPs awaiting department validation"
+                  : "SOPs awaiting your review"
             }
             value={counts?.pending_sops_for_me ?? 0}
             href={`/sops?status=${pendingStatus}`}

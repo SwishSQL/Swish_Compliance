@@ -104,6 +104,13 @@ export async function recordResultAction(formData: FormData) {
 
   const parsed = ResultSchema.parse(raw);
 
+  // Recording a control-test result: GRC editors, or the test's owner.
+  const target = await getCheck(parsed.check_id);
+  if (!target) throw new Error("Test not found.");
+  if (!user.permissions.has("grc.edit") && target.owner_user_id !== user.id) {
+    throw new Error("Only Compliance or the test's owner can record a result.");
+  }
+
   await recordResult({
     check_id: parsed.check_id,
     status: parsed.status,
@@ -185,6 +192,9 @@ export async function recordResultAction(formData: FormData) {
  */
 export async function assignTestAction(formData: FormData): Promise<void> {
   const user = await requireUser();
+  if (!user.permissions.has("audit.create")) {
+    throw new Error("Only Compliance or the IBE Manager can assign tests.");
+  }
   const raw = Object.fromEntries(formData.entries());
   const blank = (v: FormDataEntryValue | undefined) =>
     v === "" || v === undefined ? null : v;

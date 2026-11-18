@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { listFrameworks } from "@/features/frameworks/repository";
 import { getUserScope, getScopedIds } from "@/lib/auth/access";
@@ -16,7 +16,7 @@ type Search = {
 };
 
 export default async function FrameworksPage({ searchParams }: { searchParams: Promise<Search> }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const sp = await searchParams;
   const [allFrameworks, lin] = await Promise.all([listFrameworks(), loadLineage()]);
   // Access scoping: non-privileged users only see frameworks in their

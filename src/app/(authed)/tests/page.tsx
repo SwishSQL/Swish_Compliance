@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser, canEditSops } from "@/lib/auth/guard";
+import { requirePermission, canEditSops } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { listChecks } from "@/features/checks/repository";
 import { CHECK_STATUS_LABEL, CHECK_STATUS_TONE, FREQUENCY_LABEL, type CheckStatus } from "@/features/checks/types";
@@ -12,7 +12,7 @@ export default async function TestsPage({
 }: {
   searchParams: Promise<{ status?: CheckStatus; checklist?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const sp = await searchParams;
   const checklistFilter = sp.checklist ? Number(sp.checklist) : undefined;
   const allChecks = await listChecks({

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireUser } from "@/lib/auth/guard";
+import { requirePermission } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import { queryAll, queryOne } from "@/lib/db";
 import {
@@ -80,7 +80,7 @@ export default async function RoadmapPage({
 }: {
   searchParams: Promise<{ from?: string; to?: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("records.view_all");
   const sp = await searchParams;
 
   // Default to the last 30 days when no range is picked. We render the

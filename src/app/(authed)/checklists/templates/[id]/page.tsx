@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser, canEditSops, canDeleteOrArchive } from "@/lib/auth/guard";
+import { requirePermission, canEditSops, canDeleteOrArchive } from "@/lib/auth/guard";
 import Workspace from "@/features/shell/Workspace";
 import {
   getTemplate,
@@ -22,7 +22,7 @@ export default async function ChecklistTemplateDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const { id: idStr } = await params;
   const id = Number(idStr);
   const tpl = await getTemplate(id);

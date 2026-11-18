@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireUser, canEditSops, canDeleteOrArchive } from "@/lib/auth/guard";
+import { requirePermission, canEditSops, canDeleteOrArchive } from "@/lib/auth/guard";
 import DeleteEntityButton from "@/features/admin/delete/DeleteEntityButton";
 import Workspace from "@/features/shell/Workspace";
 import {
@@ -29,7 +29,7 @@ export default async function ControlDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const user = await requireUser();
+  const user = await requirePermission("grc.view");
   const { id: idStr } = await params;
   const id = Number(idStr);
   const ctrl = await getControl(id);
