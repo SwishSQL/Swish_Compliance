@@ -22,6 +22,9 @@ export async function setupDatabase() {
 
   try {
     await runMigrations({ databaseUrl });
+    // Due-soon / overdue reminders (docs/RBAC.md §9). REMINDERS_DISABLED=true turns it off.
+    const { startReminderLoop } = await import("./features/notifications/reminders");
+    startReminderLoop();
   } catch (err) {
     console.error(
       "[db] Automatic database setup FAILED — stopping the server.\n" +

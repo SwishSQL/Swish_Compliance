@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { anyFrameworkMatches, domainMatches, frameworkMatches, idParam } from "../src/features/filters/match.ts";
 import { canManageSop, canEditSopFields, nextSopVersion } from "../src/features/sops/types.ts";
+import { effectivePermissions } from "../src/lib/auth/permissions.ts";
 import { splitBatches } from "../scripts/splitBatches.mjs";
 
 /* Two domains: 1 (Ops: departments 10, 11; brand 100) and 2 (HR: department 20). */
@@ -57,21 +58,31 @@ test("next SOP version bumps the minor number", () => {
   assert.equal(nextSopVersion(" 3.4 "), "3.5");
 });
 
-test("who manages an SOP: admin/compliance/opex/BE and the owning department manager", () => {
-  const sop = { owner_id: 7, created_by: 8 };
-  for (const r of ["admin", "compliance", "opex", "business_excellence"]) assert.equal(canManageSop(r, 1, sop), true, r);
-  assert.equal(canManageSop("department_manager", 7, sop), true, "owner");
-  assert.equal(canManageSop("department_manager", 8, sop), true, "creator");
-  assert.equal(canManageSop("department_manager", 9, sop), false, "other DM");
-  assert.equal(canManageSop("viewer", 7, sop), false);
-  assert.equal(canManageSop("ceo", 1, sop), false);
+test("who manages an SOP: SOP editors and the owning department manager (RBAC)", () => {
+  const sop = { status: "approved" as const, owner_id: 7, created_by: 8, department_ids: [10] };
+  const actor = (role: string, id: number, departmentIds: number[] = []) => ({
+    id,
+    permissions: effectivePermissions([role]),
+    departmentIds,
+  });
+  for (const r of ["compliance", "opex", "business_excellence"]) assert.equal(canManageSop(actor(r, 1), sop), true, r);
+  assert.equal(canManageSop(actor("department_manager", 7), sop), true, "owner");
+  assert.equal(canManageSop(actor("department_manager", 8), sop), true, "creator");
+  assert.equal(canManageSop(actor("department_manager", 9, [10]), sop), true, "DM of the SOP's department");
+  assert.equal(canManageSop(actor("department_manager", 9, [20]), sop), false, "DM of another department");
+  assert.equal(canManageSop(actor("department_member", 3, [10]), sop), false);
+  assert.equal(canManageSop(actor("ceo", 1), sop), false);
+  assert.equal(canManageSop(actor("admin", 1), sop), false, "admin is technical only");
 });
 
-test("approved SOP content stays locked; managers edit drafts and reviews", () => {
-  assert.equal(canEditSopFields("admin", "approved"), false);
-  assert.equal(canEditSopFields("opex", "draft"), true);
-  assert.equal(canEditSopFields("compliance", "pending_ceo"), true);
-  assert.equal(canEditSopFields("viewer", "draft"), false);
+test("approved SOP content stays locked; editors edit drafts and reviews", () => {
+  const a = (role: string) => ({ id: 1, permissions: effectivePermissions([role]), departmentIds: [] as number[] });
+  const sop = (status: string) => ({ status: status as never, owner_id: 7, created_by: 7 });
+  assert.equal(canEditSopFields(a("compliance"), sop("approved")), false);
+  assert.equal(canEditSopFields(a("opex"), sop("draft")), true);
+  assert.equal(canEditSopFields(a("compliance"), sop("pending_ceo")), true);
+  assert.equal(canEditSopFields(a("department_member"), sop("draft")), false);
+  assert.equal(canEditSopFields(a("ceo"), sop("pending_ceo")), false, "CEO never edits content");
 });
 
 test("migration 006 is safe to run twice", () => {
