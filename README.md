@@ -1,4 +1,4 @@
-# Swish Compliance (SQL Server edition)
+# SWISH COMPLIANCE *SYSTEM V2.*
 
 GRC / compliance management app: SOP register with a multi-stage approval
 workflow, audits (graded Yes / No / N-A answers, several SOPs per audit),

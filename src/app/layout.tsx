@@ -3,15 +3,15 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "Swish Compliance",
-    template: "%s — Swish Compliance",
+    default: "SWISH COMPLIANCE SYSTEM V2.",
+    template: "%s — SWISH COMPLIANCE SYSTEM V2.",
   },
   description:
     "SOP register, audits, CAPA tracking and compliance dashboards for Swish.",
-  applicationName: "Swish Compliance",
+  applicationName: "SWISH COMPLIANCE SYSTEM V2.",
   appleWebApp: {
     capable: true,
-    title: "Swish",
+    title: "SWISH COMPLIANCE SYSTEM V2.",
     statusBarStyle: "black-translucent",
   },
   formatDetection: {

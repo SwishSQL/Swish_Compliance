@@ -560,11 +560,9 @@ export default function Sidebar({
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-emerald-500 to-emerald-700 flex items-center justify-center font-black text-white text-xs shadow ring-1 ring-white/10">
             S
           </div>
-          <span className="text-sm font-bold tracking-tight">
-            Swish
-            <span className="text-emerald-400/70 ml-1 text-[10px] font-medium tracking-widest">
-              v2
-            </span>
+          <span className="text-xs font-bold leading-tight tracking-tight">
+            SWISH COMPLIANCE{" "}
+            <em className="text-emerald-400/80 font-medium">SYSTEM V2.</em>
           </span>
         </Link>
         {/* Compact theme toggle on the right so it's always reachable on mobile */}
@@ -624,15 +622,12 @@ export default function Sidebar({
             <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-400 border-2 border-[#0d4530] dark:border-[#0a0a0a]" />
           </div>
           <div>
-            <div className="text-[9px] uppercase tracking-[0.22em] font-semibold text-emerald-100">
-              Swish
-            </div>
             <div className="text-[13px] font-bold text-white leading-tight tracking-tight">
-              Compliance
-              <span className="text-emerald-400/70 ml-1.5 text-[10px] font-medium tracking-widest">
-                v2
-              </span>
+              SWISH COMPLIANCE
             </div>
+            <em className="block text-[10px] font-medium tracking-widest text-emerald-400/80">
+              SYSTEM V2.
+            </em>
           </div>
         </Link>
       </div>

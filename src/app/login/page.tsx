@@ -55,7 +55,7 @@ export default async function LoginPage({
           </div>
           <div className="leading-tight">
             <div className="text-[15px] font-black tracking-[0.18em] uppercase">
-              SWISH <span className="text-white/55 font-bold">COMPLIANCE</span>
+              SWISH COMPLIANCE <em className="text-white/55 font-bold">SYSTEM V2.</em>
             </div>
             <div className="text-[10px] tracking-[0.32em] text-white/40 uppercase mt-0.5">
               Audit Infrastructure
@@ -71,7 +71,7 @@ export default async function LoginPage({
             COMPLIANCE
             <br />
             <span className="bg-gradient-to-r from-emerald-400 to-emerald-200 bg-clip-text text-transparent italic">
-              SYSTEM.
+              SYSTEM V2.
             </span>
           </h1>
           <p className="text-base text-white/60 mt-7 max-w-md leading-relaxed">
@@ -148,7 +148,7 @@ export default async function LoginPage({
           </div>
 
           <p className="text-[10px] tracking-[0.22em] text-gray-400 text-center mt-10 uppercase">
-            Swish Compliance ECS · Internal use only
+            SWISH COMPLIANCE <em>SYSTEM V2.</em> · Internal use only
           </p>
         </div>
       </section>
