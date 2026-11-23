@@ -11,8 +11,8 @@ import type { MetadataRoute } from "next";
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Swish Compliance",
-    short_name: "Swish",
+    name: "SWISH COMPLIANCE SYSTEM V2.",
+    short_name: "SWISH COMPLIANCE",
     description:
       "SOP register, audits, CAPA tracking and compliance dashboards for Swish.",
     start_url: "/my-work",
