@@ -50,7 +50,11 @@ export default function AuditAttachments({
     const fd = new FormData(e.currentTarget);
     startTransition(async () => {
       try {
-        await addAuditAttachmentsAction(fd);
+        const res = await addAuditAttachmentsAction(fd);
+        if (!res.ok) {
+          setError(res.error);
+          return;
+        }
         // Reset the picker so the next upload starts fresh.
         if (inputRef.current) inputRef.current.value = "";
         setPickedCount(0);
@@ -67,7 +71,8 @@ export default function AuditAttachments({
     fd.append("audit_id", String(auditId));
     startTransition(async () => {
       try {
-        await deleteAuditAttachmentAction(fd);
+        const res = await deleteAuditAttachmentAction(fd);
+        if (!res.ok) setError(res.error);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Delete failed.");
       }

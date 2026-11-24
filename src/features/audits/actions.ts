@@ -357,7 +357,7 @@ export async function createAuditAction(formData: FormData) {
  * Reuses the per-item evidence gate: only the auditor or admin can
  * attach, and never on a closed audit.
  */
-export async function addAuditAttachmentsAction(formData: FormData) {
+async function addAuditAttachments(formData: FormData) {
   const user = await requireUser();
   const auditId = Number(formData.get("audit_id"));
   if (!Number.isFinite(auditId) || auditId <= 0) {
@@ -398,7 +398,7 @@ export async function addAuditAttachmentsAction(formData: FormData) {
  * Remove one attachment. Same edit gate as the upload — auditor / admin,
  * not closed.
  */
-export async function deleteAuditAttachmentAction(formData: FormData) {
+async function removeAuditAttachment(formData: FormData) {
   const user = await requireUser();
   const attachmentId = Number(formData.get("attachment_id"));
   const auditId = Number(formData.get("audit_id"));
@@ -759,4 +759,32 @@ export async function closeAuditAction(formData: FormData) {
   }
   revalidatePath("/audits");
   revalidatePath(`/audits/${id}`);
+}
+
+/**
+ * The attachment actions report failures as a value instead of throwing:
+ * a thrown error reaches the browser in production as a generic "error in
+ * the Server Components render" with the real reason stripped out.
+ */
+export type AttachmentActionResult = { ok: true } | { ok: false; error: string };
+
+async function attachmentResult(run: () => Promise<void>): Promise<AttachmentActionResult> {
+  try {
+    await run();
+    return { ok: true };
+  } catch (e) {
+    // Redirects (e.g. an expired session) must keep propagating.
+    if (typeof (e as { digest?: unknown })?.digest === "string" &&
+        (e as { digest: string }).digest.startsWith("NEXT_")) throw e;
+    console.error("[audit attachments]", e);
+    return { ok: false, error: e instanceof Error ? e.message : "Something went wrong." };
+  }
+}
+
+export async function addAuditAttachmentsAction(formData: FormData): Promise<AttachmentActionResult> {
+  return attachmentResult(() => addAuditAttachments(formData));
+}
+
+export async function deleteAuditAttachmentAction(formData: FormData): Promise<AttachmentActionResult> {
+  return attachmentResult(() => removeAuditAttachment(formData));
 }
