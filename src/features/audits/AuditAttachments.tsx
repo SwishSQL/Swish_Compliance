@@ -66,12 +66,10 @@ export default function AuditAttachments({
 
   function onDelete(attachmentId: number, name: string) {
     if (!window.confirm(`Remove "${name}"?`)) return;
-    const fd = new FormData();
-    fd.append("attachment_id", String(attachmentId));
-    fd.append("audit_id", String(auditId));
+    setError(null);
     startTransition(async () => {
       try {
-        const res = await deleteAuditAttachmentAction(fd);
+        const res = await deleteAuditAttachmentAction(auditId, attachmentId);
         if (!res.ok) setError(res.error);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Delete failed.");

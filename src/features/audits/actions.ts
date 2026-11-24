@@ -398,12 +398,12 @@ async function addAuditAttachments(formData: FormData) {
  * Remove one attachment. Same edit gate as the upload — auditor / admin,
  * not closed.
  */
-async function removeAuditAttachment(formData: FormData) {
+async function removeAuditAttachment(auditIdRaw: unknown, attachmentIdRaw: unknown) {
   const user = await requireUser();
-  const attachmentId = Number(formData.get("attachment_id"));
-  const auditId = Number(formData.get("audit_id"));
-  if (!Number.isFinite(attachmentId) || attachmentId <= 0) {
-    throw new Error("Invalid attachment id.");
+  const attachmentId = Number(attachmentIdRaw);
+  const auditId = Number(auditIdRaw);
+  if (!Number.isInteger(attachmentId) || attachmentId <= 0) {
+    throw new Error(`Invalid attachment id (received ${JSON.stringify(attachmentIdRaw) ?? typeof attachmentIdRaw}).`);
   }
   const audit = await getAudit(auditId);
   if (!audit) throw new Error("Audit not found.");
@@ -785,6 +785,9 @@ export async function addAuditAttachmentsAction(formData: FormData): Promise<Att
   return attachmentResult(() => addAuditAttachments(formData));
 }
 
-export async function deleteAuditAttachmentAction(formData: FormData): Promise<AttachmentActionResult> {
-  return attachmentResult(() => removeAuditAttachment(formData));
+export async function deleteAuditAttachmentAction(
+  auditId: number,
+  attachmentId: number
+): Promise<AttachmentActionResult> {
+  return attachmentResult(() => removeAuditAttachment(auditId, attachmentId));
 }
